@@ -1,3 +1,13 @@
+/**
+ * 離線數字提取器 (Offline Number Extractor)
+ * * 🚀 GitHub 部署/開發指南：
+ * 1. 環境需求：支援 React 16.8+ (Hooks) 的任何專案環境 (如 Vite, Next.js, Create React App)。
+ * 2. 安裝依賴：本元件使用了 lucide-react 作為圖示庫，請在專案目錄執行：
+ * npm install lucide-react
+ * 3. OCR 引擎：本元件會自動透過 CDN 動態載入 Tesseract.js (v5)，無需額外設定。
+ * 4. 使用方式：將此檔案存為 NumberExtractor.jsx，並在您的主程式中直接引入即可使用。
+ */
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Clipboard, Image as ImageIcon, Copy, Check, RefreshCw, Upload, AlertCircle, Table, Layout, Camera, Trash2, X, Scissors, Info, Settings, Monitor, MousePointer2, Zap, Crop, CheckCircle2, History, Clock, ShieldCheck, Sparkles } from 'lucide-react';
 
@@ -259,6 +269,7 @@ const App = () => {
                       src={isCropMode ? originalImage : displayImage} 
                       className={`max-w-full max-h-[70vh] rounded-xl object-contain shadow-2xl ${isCropMode ? 'cursor-crosshair' : ''}`}
                       draggable={false}
+                      alt="Workspace"
                     />
                     {isCropMode && (
                       <div className="absolute inset-0 bg-black/40 pointer-events-none rounded-xl">
@@ -297,7 +308,7 @@ const App = () => {
             <div className="bg-emerald-900 text-emerald-100 p-5 rounded-3xl flex items-start gap-4 shadow-lg ring-1 ring-white/10">
               <Sparkles className="w-6 h-6 shrink-0 text-emerald-400 mt-1" />
               <div className="text-sm space-y-2">
-                <p className="font-bold text-white">如何獲得 API 等級的準確度？</p>
+                <p className="font-bold text-white">如何獲得高準確度？</p>
                 <ul className="list-disc list-inside space-y-1 opacity-90">
                   <li><strong>框選愈小愈好</strong>：選取範圍盡量貼近數字邊緣。</li>
                   <li><strong>排除非數字文字</strong>：如果區域內包含大量中文字，會干擾本地引擎。</li>
@@ -370,7 +381,7 @@ const App = () => {
                     history.map((record) => (
                       <div key={record.id} onClick={() => loadFromHistory(record)} className="bg-white border border-slate-100 rounded-3xl p-4 shadow-sm hover:border-emerald-200 cursor-pointer flex items-center gap-4 group transition-all">
                         <div className="w-14 h-14 bg-slate-100 rounded-xl overflow-hidden shrink-0 border border-slate-50">
-                          <img src={record.preview} className="w-full h-full object-cover opacity-60" />
+                          <img src={record.preview} className="w-full h-full object-cover opacity-60" alt="History preview" />
                         </div>
                         <div className="flex-1">
                           <p className="font-bold text-slate-800 flex items-center gap-2"><Clock className="w-3 h-3 text-slate-400" />{record.timestamp}</p>
