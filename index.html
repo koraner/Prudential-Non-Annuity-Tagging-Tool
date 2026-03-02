@@ -1,1377 +1,1438 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, Presentation, Move, ZoomIn, ZoomOut, Maximize, Calculator, Wand2, Loader2, Columns, Table, Info, X, Square, Edit3, Trash2 } from 'lucide-react';
-
-const loadScript = (src) => {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) {
-      resolve();
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = src;
-    script.onload = resolve;
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
-};
-
-const App = () => {
-  const [image, setImage] = useState(null);
-  const [elements, setElements] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
-  const [isPdfLibLoaded, setPdfLibLoaded] = useState(false);
-  const [isExportLibLoaded, setExportLibLoaded] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [zoom, setZoom] = useState(1);
-  const [showInfoModal, setShowInfoModal] = useState(false);
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>保誠（非年金）標注工具</title>
   
-  const [rawTextItems, setRawTextItems] = useState([]);
-  const [gapThreshold, setGapThreshold] = useState(5); 
-  const [themeColor, setThemeColor] = useState('#ef4444');
-  const [defaultFontSize, setDefaultFontSize] = useState(36);
-
-  const [pageDimensions, setPageDimensions] = useState([]);
-  const [analysisResult, setAnalysisResult] = useState(null);
-  const [dataMatrix, setDataMatrix] = useState(null); 
-  const [columnCoords, setColumnCoords] = useState([]); 
-  const [highlightSourceId, setHighlightSourceId] = useState(null);
-
-  const [colMapping, setColMapping] = useState({
-      policyYear: 0, 
-      age: 1,       
-      prem: 2,      
-      cashVal: 5,   
-      withdraw: 6   
-  });
-
-  const containerRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const mainScrollRef = useRef(null);
-
-  useEffect(() => {
-    if (window.pdfjsLib) {
-      setPdfLibLoaded(true);
-    } else {
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-      script.async = true;
-      script.onload = () => {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-        setPdfLibLoaded(true);
-      };
-      document.head.appendChild(script);
-    }
-
-    Promise.all([
-      loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'),
-      loadScript('https://cdn.jsdelivr.net/gh/gitbrent/pptxgenjs@3.12.0/dist/pptxgen.bundle.js')
-    ]).then(() => {
-      setExportLibLoaded(true);
-    }).catch(err => console.error("Export libs failed", err));
-
-  }, []);
-
-  useEffect(() => {
-      if (dataMatrix && columnCoords.length > 0) {
-          performBusinessLogicAnalysis(dataMatrix, columnCoords);
-      }
-  }, [colMapping, dataMatrix]); 
-
-  useEffect(() => {
-    if (rawTextItems.length > 0) {
-      generateColumnAnnotations(rawTextItems, gapThreshold);
-    }
-  }, [gapThreshold, rawTextItems]);
-
-  useEffect(() => {
-    setElements(prev => prev.map(el => {
-      if (['box-label', 'arrow-label', 'text-only'].includes(el.type)) {
-        return { ...el, color: themeColor };
-      }
-      return el;
-    }));
-  }, [themeColor]);
-
-  const handleZoomIn = () => setZoom(prev => Math.min(prev + 0.1, 3));
-  const handleZoomOut = () => setZoom(prev => Math.max(prev - 0.1, 0.2));
-  const handleZoomReset = () => setZoom(1);
+  <!-- 載入 Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
   
-  useEffect(() => {
-    const handleWheel = (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        if (e.deltaY < 0) {
-          setZoom(prev => Math.min(prev + 0.1, 3));
-        } else {
-          setZoom(prev => Math.max(prev - 0.1, 0.2));
-        }
-      }
-    };
-    
-    const container = mainScrollRef.current;
-    if (container) {
-      container.addEventListener('wheel', handleWheel, { passive: false });
-    }
-    return () => {
-      if (container) {
-        container.removeEventListener('wheel', handleWheel);
-      }
-    };
-  }, []);
-
-  const splitCombinedItems = (items) => {
-      const newItems = [];
-      items.forEach(item => {
-          const s = item.str.trim();
-          if (/^\d+\s+\d+$/.test(s) && !s.includes(',')) {
-              const parts = s.split(/\s+/);
-              if (parts.length === 2) {
-                  const val1 = parts[0];
-                  const val2 = parts[1];
-                  
-                  const totalLen = s.length;
-                  const w1 = (val1.length / totalLen) * item.width;
-                  const w2 = (val2.length / totalLen) * item.width;
-                  
-                  newItems.push({ ...item, str: val1, width: w1 });
-                  newItems.push({ ...item, str: val2, width: w2, x: item.x + (item.width - w2) });
-                  return;
-              }
-          }
-          newItems.push(item);
-      });
-      return newItems;
-  };
-
-  const snapToRows = (items) => {
-      if (items.length === 0) return [];
-      const sorted = [...items].sort((a, b) => a.y - b.y);
-      const rows = [];
-      let currentRow = [sorted[0]];
-      
-      for (let i = 1; i < sorted.length; i++) {
-          const item = sorted[i];
-          const prev = currentRow[currentRow.length - 1];
-          const centerDiff = Math.abs((item.y + item.height/2) - (prev.y + prev.height/2));
-          
-          if (centerDiff < 15) {
-              currentRow.push(item);
-          } else {
-              rows.push(currentRow);
-              currentRow = [item];
-          }
-      }
-      rows.push(currentRow);
-      
-      const alignedItems = [];
-      rows.forEach(row => {
-          const avgY = row.reduce((sum, it) => sum + it.y, 0) / row.length;
-          const avgHeight = row.reduce((sum, it) => sum + it.height, 0) / row.length;
-          row.forEach(it => {
-              alignedItems.push({ ...it, y: avgY, height: avgHeight });
-          });
-      });
-      return alignedItems;
-  };
-
-  const mergeCloseItems = (items) => {
-      const byRow = {};
-      items.forEach(item => {
-          const yKey = item.y.toFixed(3);
-          if (!byRow[yKey]) byRow[yKey] = [];
-          byRow[yKey].push(item);
-      });
-      const merged = [];
-      Object.values(byRow).forEach(rowItems => {
-          rowItems.sort((a, b) => a.x - b.x);
-          if (rowItems.length === 0) return;
-          let current = rowItems[0];
-          for (let i = 1; i < rowItems.length; i++) {
-              const next = rowItems[i];
-              const gap = next.x - (current.x + current.width);
-              
-              const isCurrentInt = /^\d+$/.test(current.str.trim());
-              const isNextInt = /^\d+$/.test(next.str.trim());
-              const isBothIntegers = isCurrentInt && isNextInt;
-
-              const dynamicThreshold = isBothIntegers ? 5 : 20;
-
-              if (gap < dynamicThreshold) {
-                  current.str += next.str;
-                  current.width = (next.x + next.width) - current.x;
-                  current.height = Math.max(current.height, next.height);
-              } else {
-                  merged.push(current);
-                  current = next;
-              }
-          }
-          merged.push(current);
-      });
-      return merged;
-  };
-
-  const filterTableData = (items) => {
-    const tableKeywords = ['年度', '年齡', '保費', '解約金', '保險金額', '給付', '折扣後', '累計'];
-    const rowBuckets = {}; 
-    items.forEach(item => {
-      const yBucket = Math.round(item.y / 10) * 10;
-      const cleanStr = item.str.replace(/\s+/g, ''); 
-      if (tableKeywords.some(k => cleanStr.includes(k))) {
-        rowBuckets[yBucket] = (rowBuckets[yBucket] || 0) + 1;
-      }
-    });
-
-    let bestY = 0;
-    let maxScore = 0;
-    Object.entries(rowBuckets).forEach(([y, score]) => {
-      if (score > maxScore) { maxScore = score; bestY = parseInt(y); }
-    });
-
-    const numberPattern = /^[0-9,\.\-\(\)\s]+$/; 
-    const hasDigit = /\d/;
-
-    if (maxScore === 0) {
-        return items.filter(item => {
-            const s = item.str.trim();
-            return s.length > 0 && hasDigit.test(s);
-        });
-    }
-
-    const pageHeaderThreshold = bestY + 20;
-
-    return items.filter(item => {
-      const s = item.str.trim();
-      const isNumber = s.length > 0 && hasDigit.test(s) && numberPattern.test(s);
-      const isBelowHeader = item.y > pageHeaderThreshold;
-      return isNumber && isBelowHeader;
-    });
-  };
-
-  const processMultiPagePdf = async (pdf) => {
-    const numPages = pdf.numPages;
-    const scale = 4.0; 
-    let totalHeight = 0;
-    let maxWidth = 0;
-    const pageDims = [];
-    const pageData = [];
-
-    for (let i = 1; i <= numPages; i++) {
-      const page = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale });
-      const textContent = await page.getTextContent();
-      pageDims.push({
-        pageIndex: i - 1,
-        width: viewport.width,
-        height: viewport.height,
-        startY: totalHeight,
-        endY: totalHeight + viewport.height
-      });
-      pageData.push({ page, viewport, textContent, offsetY: totalHeight });
-      totalHeight += viewport.height;
-      maxWidth = Math.max(maxWidth, viewport.width);
-    }
-    setPageDimensions(pageDims);
-
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    canvas.width = maxWidth;
-    canvas.height = totalHeight;
-    context.fillStyle = '#FFFFFF';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    
-    const allRawItems = [];
-    for (const data of pageData) {
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = data.viewport.width;
-      tempCanvas.height = data.viewport.height;
-      const tempCtx = tempCanvas.getContext('2d');
-      await data.page.render({ canvasContext: tempCtx, viewport: data.viewport }).promise;
-      context.drawImage(tempCanvas, 0, data.offsetY);
-      data.textContent.items.forEach(item => {
-        const tx = item.transform; 
-        const [vx, vy] = data.viewport.convertToViewportPoint(tx[4], tx[5]);
-        const fontScaleY = Math.sqrt(tx[2]*tx[2] + tx[3]*tx[3]);
-        const realHeight = (fontScaleY * scale) || (item.height * scale) || (12 * scale);
-        allRawItems.push({
-          str: item.str,
-          x: vx, y: vy + data.offsetY, width: item.width * scale, height: realHeight 
-        });
-      });
-    }
-
-    const splitItems = splitCombinedItems(allRawItems); 
-    const alignedItems = snapToRows(splitItems); 
-    const mergedItems = mergeCloseItems(alignedItems); 
-    const allFilteredItems = filterTableData(mergedItems);
-
-    const finalImageUrl = canvas.toDataURL('image/jpeg', 0.95);
-    setImage(finalImageUrl);
-    if (mainScrollRef.current) {
-        const containerWidth = mainScrollRef.current.clientWidth - 400; 
-        if (maxWidth > containerWidth) setZoom(Math.max(0.4, containerWidth / maxWidth));
-    }
-    setRawTextItems(allFilteredItems);
-    generateColumnAnnotations(allFilteredItems, gapThreshold);
-  };
-
-  const performBusinessLogicAnalysis = (inputMatrix, columns) => {
-    setDataMatrix(inputMatrix);
-    setColumnCoords(columns);
-
-    const getVal = (rowIdx, colIdx) => {
-        if (!inputMatrix[rowIdx] || !inputMatrix[rowIdx][colIdx]) return 0;
-        const str = inputMatrix[rowIdx][colIdx].str.replace(/,/g, '').trim();
-        return parseFloat(str) || 0;
-    };
-    const getItem = (rowIdx, colIdx) => {
-        if (!inputMatrix[rowIdx] || !inputMatrix[rowIdx][colIdx]) return null;
-        return inputMatrix[rowIdx][colIdx];
-    }
-
-    const C_PREM = colMapping.prem;
-    const C_CASH_VAL = colMapping.cashVal;
-    const C_WITHDRAW = colMapping.withdraw;
-    const C_AGE = colMapping.age;
-
-    let premSum = 0;
-    let premCount = 0;
-    for(let i=0; i<Math.min(10, inputMatrix.length); i++) {
-        const val = getVal(i, C_PREM);
-        if (val > 100) { 
-            premSum += val;
-            premCount++;
-        }
-    }
-    const avgPrem = premCount > 0 ? premSum / premCount : 0;
-
-    const res = {};
-    let paymentTerm = 0;
-    let totalPremium = 0;
-
-    inputMatrix.forEach(row => { 
-        const val = getVal(inputMatrix.indexOf(row), C_PREM);
-        const isNoise = avgPrem > 0 && val < avgPrem * 0.1; 
-        
-        if (val > 0 && !isNoise) {
-            paymentTerm++;
-            totalPremium += val;
-        }
-    });
-    
-    res.paymentTerm = paymentTerm;
-    res.totalPremium = totalPremium;
-
-    res.breakevenRowIdx = paymentTerm > 0 ? paymentTerm - 1 : 0;
-    res.breakevenValue = getVal(res.breakevenRowIdx, C_CASH_VAL);
-    res.breakevenItem = getItem(res.breakevenRowIdx, C_CASH_VAL);
-
-    let startWithdrawRowIdx = -1;
-    for (let i = 0; i < inputMatrix.length; i++) {
-        if (getVal(i, C_WITHDRAW) > 0) { startWithdrawRowIdx = i; break; }
-    }
-    res.startWithdrawRowIdx = startWithdrawRowIdx;
-    res.startAge = startWithdrawRowIdx !== -1 ? getVal(startWithdrawRowIdx, C_AGE) : '-';
-    res.startAgeItem = startWithdrawRowIdx !== -1 ? getItem(startWithdrawRowIdx, C_AGE) : null;
-
-    let withdrawRows = [];
-    inputMatrix.forEach((row, idx) => {
-        const val = getVal(idx, C_WITHDRAW);
-        if (val > 0) withdrawRows.push({ val, idx });
-    });
-    let withdrawCount = withdrawRows.length;
-    let validWithdrawals = [...withdrawRows];
-    if (withdrawCount > 1) {
-        const sumVal = withdrawRows.reduce((a, b) => a + b.val, 0);
-        const avg = sumVal / withdrawCount;
-        const last = withdrawRows[withdrawRows.length - 1];
-        if (last.val < avg * 0.9) { withdrawCount--; validWithdrawals.pop(); }
-    }
-    res.withdrawCount = withdrawCount;
-    res.validWithdrawals = validWithdrawals;
-
-    const calculatedTotalWithdraw = withdrawRows.reduce((acc, curr) => acc + curr.val, 0);
-    res.totalWithdraw = calculatedTotalWithdraw;
-    res.withdrawRatio = totalPremium > 0 ? (res.totalWithdraw / totalPremium).toFixed(2) : 0;
-    
-    if(withdrawRows.length > 0) {
-        const lastW = withdrawRows[withdrawRows.length-1];
-        res.totalWithdrawItem = getItem(lastW.idx, C_WITHDRAW);
-    }
-
-    let finalCashValue = 0;
-    let finalCashValueItem = null;
-    for(let i=inputMatrix.length-1; i>=0; i--) {
-        const v = getVal(i, C_CASH_VAL);
-        if(v > 0) { finalCashValue = v; finalCashValueItem = getItem(i, C_CASH_VAL); break; }
-    }
-    res.finalCashValue = finalCashValue;
-    res.finalCashValueItem = finalCashValueItem;
-    res.finalRatio = totalPremium > 0 ? (res.finalCashValue / totalPremium).toFixed(2) : 0;
-    
-    res.avgPremThreshold = avgPrem * 0.1;
-
-    setAnalysisResult(res);
-  };
-
-  const generateColumnAnnotations = (items, currentThreshold) => {
-    const xCenters = items.map(item => item.x + (item.width/2));
-    const clusters = [];
-    const tolerance = currentThreshold; 
-    xCenters.forEach(x => {
-        let bestCluster = null;
-        let minDiff = Infinity;
-        for (const cluster of clusters) {
-          const avgX = cluster.sum / cluster.count;
-          const diff = Math.abs(x - avgX);
-          if (diff < minDiff) { minDiff = diff; bestCluster = cluster; }
-        }
-        if (bestCluster && minDiff < tolerance) { bestCluster.sum += x; bestCluster.count += 1; } 
-        else { clusters.push({ sum: x, count: 1 }); }
-    });
-    const maxCount = Math.max(...clusters.map(c => c.count));
-    const densityThreshold = maxCount * 0.15;
-    let finalClusters = clusters.filter(c => c.count > densityThreshold).map(c => c.sum / c.count).sort((a, b) => a - b);
-    
-    const mergedColumns = [];
-    if (finalClusters.length > 0) {
-        let current = finalClusters[0];
-        for (let i = 1; i < finalClusters.length; i++) {
-            if (finalClusters[i] - current < tolerance) { current = (current + finalClusters[i]) / 2; } 
-            else { mergedColumns.push(current); current = finalClusters[i]; }
-        }
-        mergedColumns.push(current);
-    } else { mergedColumns.push(...finalClusters); }
-    
-    const matrix = []; 
-    const rowMap = {};
-    const rowTolerance = 15; 
-    
-    items.forEach(item => {
-        let foundRowY = null;
-        for (const yKey in rowMap) {
-            if (Math.abs(item.y - parseFloat(yKey)) < rowTolerance) {
-                foundRowY = yKey;
-                break;
-            }
-        }
-        if (!foundRowY) {
-            foundRowY = item.y;
-            rowMap[foundRowY] = [];
-        }
-        rowMap[foundRowY].push(item);
-    });
-    
-    const sortedRowYs = Object.keys(rowMap).sort((a, b) => parseFloat(a) - parseFloat(b));
-    sortedRowYs.forEach(yKey => {
-        const rowItems = rowMap[yKey];
-        const rowData = new Array(mergedColumns.length).fill(null);
-        rowItems.forEach(item => {
-            const itemCenter = item.x + item.width / 2;
-            let closestColIdx = -1;
-            let minDiff = Infinity;
-            mergedColumns.forEach((colX, idx) => {
-                const diff = Math.abs(itemCenter - colX);
-                if (diff < minDiff) { minDiff = diff; closestColIdx = idx; }
-            });
-            if (closestColIdx !== -1) rowData[closestColIdx] = item;
-        });
-        matrix.push(rowData);
-    });
-
-    performBusinessLogicAnalysis(matrix, mergedColumns);
-  };
-
-  const formatWan = (val) => {
-    if (!val) return '0';
-    const w = Math.floor((val / 10000) * 10) / 10;
-    return `${w}萬`;
-  };
-
-  const generateMarketingAnnotations = () => {
-    if (!analysisResult || !dataMatrix) {
-        alert("請先上傳 PDF 並等待分析完成。");
-        return;
-    }
-    const { 
-        paymentTerm, totalPremium, breakevenRowIdx, breakevenValue, 
-        startWithdrawRowIdx, startAge, withdrawCount, totalWithdraw, withdrawRatio,
-        finalCashValue, finalRatio, totalWithdrawItem, finalCashValueItem, validWithdrawals 
-    } = analysisResult;
-    
-    const C_PREM = colMapping.prem;
-    const C_CASH_VAL = colMapping.cashVal;
-    const C_WITHDRAW = colMapping.withdraw;
-
-    const newElements = [];
-    const timestamp = Date.now();
-    const maxPageWidth = pageDimensions.length > 0 ? pageDimensions[0].width : 800;
-    const safeRightX = maxPageWidth - 320; 
-    const rightMarginX = columnCoords.length > 0 ? Math.min(columnCoords[columnCoords.length-1] + 100, safeRightX) : safeRightX;
-    const PAD = 8; 
-    const FONT_SIZE = defaultFontSize;
-
-    const addBoxAndText = (boxRect, text, textPos, style, vertical = false) => {
-        const cleanText = text.replace(/\s+/g, ''); 
-        newElements.push({
-            id: `mk-${timestamp}-box-${newElements.length}`,
-            type: 'box-label', 
-            text: '', 
-            x: boxRect.x, y: boxRect.y, width: boxRect.w, height: boxRect.h,
-            color: themeColor,
-            style: 'none'
-        });
-        newElements.push({
-            id: `mk-${timestamp}-text-${newElements.length}`,
-            type: 'text-only',
-            text: cleanText,
-            x: textPos.x, y: textPos.y,
-            color: themeColor,
-            fontSize: FONT_SIZE,
-            vertical: vertical
-        });
-    };
-
-    const startRowItem = (dataMatrix[0] && dataMatrix[0][C_PREM]) ? dataMatrix[0][C_PREM] : null;
-    const endRowItem = (dataMatrix[paymentTerm-1] && dataMatrix[paymentTerm-1][C_PREM]) ? dataMatrix[paymentTerm-1][C_PREM] : null;
-
-    if (startRowItem && endRowItem) {
-        const boxTop = startRowItem.y - startRowItem.height - PAD;
-        const boxBottom = endRowItem.y + PAD; 
-        const boxHeight = boxBottom - boxTop;
-        const textX = startRowItem.x - 80; 
-        const textY = boxTop;
-        addBoxAndText({ x: startRowItem.x - 10, y: boxTop, w: startRowItem.width + 20, h: boxHeight }, `1.只要存${paymentTerm}年`, { x: textX, y: textY }, 'left', true);
-    }
-
-    const breakevenItem = (dataMatrix[breakevenRowIdx] && dataMatrix[breakevenRowIdx][C_CASH_VAL]) ? dataMatrix[breakevenRowIdx][C_CASH_VAL] : null;
-    if (breakevenItem) {
-        const boxTop = breakevenItem.y - breakevenItem.height - PAD;
-        const h = breakevenItem.height + PAD * 2;
-        const textX = breakevenItem.x - 120;
-        const textY = boxTop - 20;
-        addBoxAndText({ x: breakevenItem.x - 5, y: boxTop, w: breakevenItem.width + 10, h: h }, `2.期滿保本隨時可動用`, { x: textX, y: textY }, 'left', true);
-    }
-
-    if (breakevenItem && startWithdrawRowIdx !== -1) {
-        const withdrawStartItem = (dataMatrix[startWithdrawRowIdx] && dataMatrix[startWithdrawRowIdx][C_WITHDRAW]) ? dataMatrix[startWithdrawRowIdx][C_WITHDRAW] : null;
-        if (withdrawStartItem) {
-            const startX = (breakevenItem.x + withdrawStartItem.x) / 2;
-            const startY = breakevenItem.y + 40; 
-            const endY = withdrawStartItem.y - withdrawStartItem.height - 40; 
-            let splitY = null;
-            if (pageDimensions.length > 1) {
-                const startPage = pageDimensions.find(p => startY >= p.startY && startY < p.endY);
-                const endPage = pageDimensions.find(p => endY >= p.startY && endY < p.endY);
-                if (startPage && endPage && startPage.pageIndex !== endPage.pageIndex) {
-                    splitY = startPage.endY; 
-                }
-            }
-            if (splitY) {
-                newElements.push({ id: `mk-${timestamp}-3-1`, type: 'arrow-label', text: '3.時間與複利增值(接下頁)', x: startX, y: startY, height: splitY - startY - 20, color: themeColor, hideArrowHead: true, textSide: 'right', fontSize: FONT_SIZE });
-                newElements.push({ id: `mk-${timestamp}-3-2`, type: 'arrow-label', text: '(承上頁)持續增值', x: startX, y: splitY + 20, height: endY - (splitY + 20), color: themeColor, textSide: 'right', fontSize: FONT_SIZE });
-            } else {
-                newElements.push({ id: `mk-${timestamp}-3`, type: 'arrow-label', text: '3.時間與複利增值', x: startX, y: startY, height: endY - startY, color: themeColor, textSide: 'right', fontSize: FONT_SIZE });
-            }
-        }
-    }
-
-    let refY = 300; 
-    if (dataMatrix[0]) {
-        const firstValidItem = dataMatrix[0].find(item => item !== null);
-        if (firstValidItem) {
-            refY = firstValidItem.y;
-        }
-    }
-    
-    newElements.push({ id: `mk-${timestamp}-4`, type: 'text-only', text: '4.保單的增值免課健保補充保費', x: rightMarginX, y: (refY + 100), color: themeColor, fontSize: FONT_SIZE, vertical: true });
-
-    if (validWithdrawals && validWithdrawals.length > 0) {
-        const withdrawItems = validWithdrawals.map(v => (dataMatrix[v.idx] && dataMatrix[v.idx][C_WITHDRAW]) ? dataMatrix[v.idx][C_WITHDRAW] : null).filter(i => i !== null);
-        const segments = [];
-        if (withdrawItems.length > 0) {
-            let currentSegment = [withdrawItems[0]];
-            const PAGE_GAP_THRESHOLD = 100;
-            for (let i = 1; i < withdrawItems.length; i++) {
-                const prev = withdrawItems[i-1];
-                const curr = withdrawItems[i];
-                if ((curr.y - prev.y) > PAGE_GAP_THRESHOLD) {
-                    segments.push(currentSegment);
-                    currentSegment = [curr];
-                } else {
-                    currentSegment.push(curr);
-                }
-            }
-            segments.push(currentSegment);
-            segments.forEach((seg, idx) => {
-                const first = seg[0];
-                const last = seg[seg.length - 1];
-                const labelText = idx === 0 ? `5.${startAge}歲起每年領回` : "";
-                const boxTop = first.y - first.height - PAD;
-                const boxBottom = last.y + PAD; 
-                const boxHeight = boxBottom - boxTop;
-                addBoxAndText({ x: first.x - 5, y: boxTop, w: first.width + 10, h: boxHeight }, labelText, { x: first.x - 80, y: boxTop }, 'left', true);
-            });
-        }
-    }
-
-    if (totalWithdrawItem) {
-        const formattedTotal = formatWan(analysisResult.totalWithdraw);
-        const boxTop = totalWithdrawItem.y - totalWithdrawItem.height - PAD;
-        const w = totalWithdrawItem.width + 10;
-        const h = totalWithdrawItem.height + PAD * 2;
-        addBoxAndText({ x: totalWithdrawItem.x - 5, y: boxTop, w, h }, `6.可領${withdrawCount}次,總領${formattedTotal}(${withdrawRatio}倍)`, { x: totalWithdrawItem.x - 5, y: boxTop + h + 10 }, 'bottom', false);
-    }
-
-    if (finalCashValueItem) {
-         const formattedValue = formatWan(finalCashValue);
-         const boxTop = finalCashValueItem.y - finalCashValueItem.height - PAD;
-         const w = finalCashValueItem.width + 10;
-         const h = finalCashValueItem.height + PAD * 2;
-         addBoxAndText({ x: finalCashValueItem.x - 5, y: boxTop, w, h }, `7.也可以不領,最高增值到${formattedValue}(${finalRatio}倍)`, { x: finalCashValueItem.x + w + 10, y: boxTop }, 'right', false);
-    }
-
-    const lastPage = pageDimensions.length > 0 ? pageDimensions[pageDimensions.length-1] : { endY: 1000, startY: 0 };
-    // 增加第8點與第9點的間距 (+120px)
-    const footerStartY = lastPage.endY - 200; 
-    newElements.push({ id: `mk-${timestamp}-8`, type: 'text-only', text: '8.身故受益金不計入遺產', x: 100, y: footerStartY, color: themeColor, fontSize: FONT_SIZE, vertical: false });
-    newElements.push({ id: `mk-${timestamp}-9`, type: 'text-only', text: '9.如您心意,分給所愛,不受應繼分特留分限制', x: 100, y: footerStartY + 120, color: themeColor, fontSize: FONT_SIZE, vertical: false });
-
-    const cleanElements = elements.filter(e => !e.isHeader);
-    setElements([...cleanElements, ...newElements]);
-    alert("✨ 行銷說明圖已生成！");
-  };
-
-  const handleExportPDF = async () => {
-    if (!image || !window.jspdf) return;
-    setIsProcessing(true);
-    try {
-        const { jsPDF } = window.jspdf;
-        const firstPage = pageDimensions[0];
-        const doc = new jsPDF({
-            orientation: firstPage.width > firstPage.height ? 'l' : 'p',
-            unit: 'px', 
-            format: [firstPage.width, firstPage.height]
-        });
-        for (let i = 0; i < pageDimensions.length; i++) {
-            const page = pageDimensions[i];
-            if (i > 0) {
-                doc.addPage([page.width, page.height], page.width > page.height ? 'l' : 'p');
-            }
-            const canvas = document.createElement('canvas');
-            const scaleFactor = 3.0; 
-            canvas.width = page.width * scaleFactor;
-            canvas.height = page.height * scaleFactor;
-            const ctx = canvas.getContext('2d');
-            ctx.scale(scaleFactor, scaleFactor);
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fillRect(0, 0, page.width, page.height);
-            const img = new Image();
-            await new Promise(r => { img.onload=r; img.src=image; });
-            ctx.drawImage(img, 0, page.startY, page.width, page.height, 0,0,page.width, page.height);
-            const pageElements = elements.filter(el => el.y >= page.startY && el.y < page.endY);
-            pageElements.forEach(el => {
-                const x = el.x; const y = el.y - page.startY; const w = el.width || 0; const h = el.height || 0;
-                if (el.type === 'box-label' || el.type.startsWith('box-highlight')) {
-                    ctx.lineWidth = 3;
-                    ctx.strokeStyle = el.color || '#ef4444';
-                    ctx.strokeRect(x, y, w, h);
-                } else if (el.type === 'arrow-label') {
-                    ctx.beginPath(); ctx.moveTo(x + w/2, y); ctx.lineTo(x + w/2, y + h);
-                    ctx.lineWidth = 4; ctx.strokeStyle = el.color || '#ef4444'; ctx.stroke();
-                    if (!el.hideArrowHead) { ctx.beginPath(); ctx.moveTo(x+w/2-8, y+h-12); ctx.lineTo(x+w/2, y+h); ctx.lineTo(x+w/2+8, y+h-12); ctx.stroke(); }
-                    if (el.textSide === 'right') {
-                       drawTextWithBackground(ctx, el.text, x + 36, y + 20, { vertical: true, fontSize: el.fontSize, color: el.color });
-                    }
-                } else if (el.type === 'text-only') {
-                    drawTextWithBackground(ctx, el.text, x, y, { vertical: el.vertical, fontSize: el.fontSize, color: el.color });
-                }
-            });
-            const finalPageData = canvas.toDataURL('image/jpeg', 0.90);
-            doc.addImage(finalPageData, 'JPEG', 0, 0, page.width, page.height);
-        }
-        doc.save("保單分析.pdf");
-    } catch (e) { console.error(e); alert("匯出 PDF 失敗"); }
-    setIsProcessing(false);
-  };
-
-  const drawTextWithBackground = (ctx, text, x, y, options = {}) => {
-      const { vertical, fontSize = 24, color = '#ef4444' } = options;
-      ctx.font = `bold ${fontSize}px sans-serif`;
-      ctx.textBaseline = 'top';
-      const paddingX = 8;
-      const paddingY = 4;
-      
-      if (vertical) {
-          const chars = text.split('');
-          const charHeight = fontSize * 1.1;
-          const totalHeight = chars.length * charHeight;
-          const width = fontSize + paddingX * 2;
-          const height = totalHeight + paddingY * 2;
-          
-          ctx.fillStyle = '#FFFFFF';
-          ctx.shadowColor = "rgba(0, 0, 0, 0.2)";
-          ctx.shadowBlur = 4;
-          ctx.shadowOffsetX = 1;
-          ctx.shadowOffsetY = 1;
-          ctx.fillRect(x, y, width, height);
-          
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x, y, width, height);
-          ctx.shadowColor = "transparent";
-          ctx.fillStyle = color;
-          chars.forEach((c, i) => {
-              const m = ctx.measureText(c);
-              const cx = x + paddingX + (fontSize - m.width)/2;
-              ctx.fillText(c, cx, y + paddingY + (i * charHeight));
-          });
-      } else {
-          const metrics = ctx.measureText(text);
-          const width = metrics.width + paddingX * 2;
-          const height = fontSize * 1.3 + paddingY * 2;
-          
-          ctx.fillStyle = '#FFFFFF';
-          ctx.shadowColor = "rgba(0, 0, 0, 0.2)";
-          ctx.shadowBlur = 4;
-          ctx.shadowOffsetX = 1;
-          ctx.shadowOffsetY = 1;
-          ctx.fillRect(x, y, width, height);
-          
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x, y, width, height);
-          ctx.shadowColor = "transparent";
-          ctx.fillStyle = color;
-          ctx.fillText(text, x + paddingX, y + paddingY + 2); 
-      }
-  };
-
-  const handleExportPPTX = async () => {
-    if (!image || !window.PptxGenJS) return;
-    setIsProcessing(true);
-    try {
-        const pptx = new window.PptxGenJS();
-        const firstPage = pageDimensions[0];
-        const isPortrait = firstPage && firstPage.height > firstPage.width;
-        
-        if (isPortrait) {
-            pptx.defineLayout({ name: 'A4_PORTRAIT', width: 8.27, height: 11.69 });
-            pptx.layout = 'A4_PORTRAIT';
-        } else {
-            pptx.layout = 'LAYOUT_16x9'; 
-        }
-
-        for (let i = 0; i < pageDimensions.length; i++) {
-            const slide = pptx.addSlide();
-            const page = pageDimensions[i];
-            
-            const bgCanvas = document.createElement('canvas');
-            bgCanvas.width = page.width;
-            bgCanvas.height = page.height;
-            const bgCtx = bgCanvas.getContext('2d');
-            bgCtx.fillStyle = '#FFFFFF';
-            bgCtx.fillRect(0,0,page.width, page.height);
-            const img = new Image();
-            await new Promise(r => { img.onload=r; img.src=image; });
-            bgCtx.drawImage(img, 0, page.startY, page.width, page.height, 0,0,page.width, page.height);
-            const bgData = bgCanvas.toDataURL('image/jpeg', 0.9);
-
-            slide.addImage({ data: bgData, x: 0, y: 0, w: '100%', h: '100%' });
-
-            const pageElements = elements.filter(el => 
-                el.y >= page.startY && el.y < page.endY
-            );
-
-            const s = (val) => {
-                if (typeof val !== 'number' || !isFinite(val)) return 0;
-                return parseFloat(val.toFixed(1));
-            };
-
-            pageElements.forEach(el => {
-                const relativeY = el.y - page.startY;
-                const xPct = s((el.x / page.width) * 100);
-                const yPct = s((relativeY / page.height) * 100);
-                const wPct = s((el.width / page.width) * 100);
-                const hPct = s((el.height / page.height) * 100);
-                
-                const col = (el.color || '#ef4444').replace('#', '');
-
-                if (el.type === 'box-label') {
-                    slide.addShape(pptx.ShapeType.rect, { x: xPct+'%', y: yPct+'%', w: wPct+'%', h: hPct+'%', line: { color: col, width: 2 }, fill: { type: 'none' } });
-                } else if (el.type === 'arrow-label') {
-                    slide.addShape(pptx.ShapeType.line, { x: (s(el.x) + s(el.width)/2)/page.width*100 + '%', y: yPct+'%', w: 0, h: hPct+'%', line: { color: col, width: 3, endArrowType: 'triangle' } });
-                    if (el.textSide === 'right') {
-                       slide.addText(el.text.split('').join('\n'), { 
-                           shape: pptx.ShapeType.rect,
-                           x: (s(el.x) + s(el.width) + 10)/page.width*100 + '%', 
-                           y: relativeY/page.height*100 + '%', 
-                           w: 0.6, h: 2, 
-                           color: col, bold: true, fontSize: 12, 
-                           fill: {color:'FFFFFF'}, 
-                           line: { color: col, width: 1 }, 
-                           shadow: { type: 'outer', color: '000000', opacity: 0.3, blur: 3, offset: 3 },
-                           lineSpacing: 12 
-                       });
-                    }
-                } else if (el.type === 'text-only') {
-                    const text = el.vertical ? el.text.split('').join('\n') : el.text;
-                    const wVal = el.vertical ? 5 : (text.length * 1.5 + 5); 
-                    const hVal = el.vertical ? (text.length * 2 + 5) : 5;
-                    
-                    slide.addText(text, { 
-                        shape: pptx.ShapeType.rect,
-                        x: xPct+'%', y: yPct+'%', 
-                        w: wVal+'%', h: hVal+'%', 
-                        color: col, bold: true, fontSize: 14, 
-                        fill: {color:'FFFFFF'},
-                        line: { color: col, width: 1 },
-                        shadow: { type: 'outer', color: '000000', opacity: 0.3, blur: 3, offset: 3 }
-                    });
-                }
-            });
-        }
-        pptx.writeFile({ fileName: "保單分析.pptx" });
-    } catch (e) { console.error(e); alert("匯出 PPT 失敗: " + e.message); }
-    setIsProcessing(false);
-  };
-
-  const processPdfFile = async (file) => {
-    if (!isPdfLibLoaded) { alert('PDF 轉換核心載入中...'); return; }
-    setIsProcessing(true);
-    setAnalysisResult(null);
-    setDataMatrix(null);
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const pdf = await window.pdfjsLib.getDocument(arrayBuffer).promise;
-      await processMultiPagePdf(pdf);
-    } catch (error) { console.error(error); alert('PDF 讀取失敗。'); } 
-    finally { setIsProcessing(false); }
-  };
-
-  const handleFiles = (e) => {
-      const files = e.target.files;
-      if (!files || files.length === 0) return;
-      const firstFile = files[0];
-      if (firstFile.type === 'application/pdf') { processPdfFile(firstFile); } 
-      else { alert("僅支援 PDF 檔案上傳"); }
-  };
-
-  const addElement = (preset) => {
-    const id = Date.now().toString() + Math.random();
-    setElements(prev => [...prev, { id, x: (100 / zoom), y: (300 / zoom), ...preset, color: themeColor, fontSize: defaultFontSize }]);
-    setSelectedId(id);
-  };
-
-  const deleteElement = (id) => {
-    setElements(elements.filter(el => el.id !== id));
-    setSelectedId(null);
-  };
+  <!-- 載入 React 核心與 ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   
-  const handleUpdateText = (id, text) => {
-    setElements(prev => prev.map(item => item.id === id ? { ...item, text } : item));
-  };
-  
-  const handleUpdateFontSize = (id, size) => {
-    setElements(prev => prev.map(item => item.id === id ? { ...item, fontSize: Number(size) } : item));
-  };
+  <!-- 載入 Babel 以便在瀏覽器中編譯 JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  const handleDragStart = (e, id) => {
-    e.stopPropagation(); setSelectedId(id);
-    const el = elements.find(el => el.id === id); if(!el) return;
-    const startX = e.clientX; const startY = e.clientY; const origX = el.x; const origY = el.y;
-    const handleMouseMove = (ev) => {
-      setElements(prev => prev.map(item => item.id === id ? { ...item, x: origX + (ev.clientX - startX)/zoom, y: origY + (ev.clientY - startY)/zoom } : item));
-    };
-    const handleMouseUp = () => { window.removeEventListener('mousemove', handleMouseMove); window.removeEventListener('mouseup', handleMouseUp); };
-    window.addEventListener('mousemove', handleMouseMove); window.addEventListener('mouseup', handleMouseUp);
-  };
+  <style>
+    .custom-scrollbar::-webkit-scrollbar {
+        width: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+        background: #f1f1f1;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: #c1c1c1;
+        border-radius: 10px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: #a8a8a8;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
 
-  const handleResizeStart = (e, id, dimension) => {
-    e.stopPropagation();
-    const el = elements.find(el => el.id === id);
-    const startVal = e.clientY; 
-    const startValX = e.clientX;
-    const origVal = el.height;
-    const origValW = el.width;
-    
-    const handleMouseMove = (ev) => {
-      setElements(prev => prev.map(item => {
-          if (item.id !== id) return item;
-          const newH = Math.max(10, origVal + (ev.clientY - startVal)/zoom);
-          const newW = Math.max(10, origValW + (ev.clientX - startValX)/zoom);
-          
-          if (dimension === 'height') return { ...item, height: newH };
-          if (dimension === 'both') return { ...item, width: newW, height: newH };
-          return item;
-      }));
-    };
-    const handleMouseUp = () => { window.removeEventListener('mousemove', handleMouseMove); window.removeEventListener('mouseup', handleMouseUp); };
-    window.addEventListener('mousemove', handleMouseMove); window.addEventListener('mouseup', handleMouseUp);
-  };
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
 
-  const selectedElement = elements.find(el => el.id === selectedId);
-
-  const handleGlobalClick = (e) => {
-      if (e.target === containerRef.current || e.target === containerRef.current?.querySelector('img')) {
-          setSelectedId(null);
-      }
-  };
-
-  const handleKeyDown = (e) => {
-      if (selectedId && e.key === 'Enter') { setSelectedId(null); }
-  };
-
-  const DraggableItem = ({ element, isSelected, onDragStart, onSelect, onResizeStart, onUpdateText }) => {
-    const commonStyle = { position: 'absolute', left: element.x, top: element.y, cursor: isSelected ? 'move' : 'pointer', zIndex: 10 };
-    const selectionBorder = isSelected ? 'ring-2 ring-blue-500 ring-offset-1' : '';
-    const itemColor = element.color || '#ef4444';
-
-    const TextDisplay = ({ className, vertical }) => (
-      <div className={`font-bold whitespace-nowrap bg-white shadow-md border rounded-md px-2 py-1 ${className}`} 
-          style={{ 
-              color: itemColor,
-              borderColor: `${itemColor}40`, 
-              fontSize: element.fontSize || 24, 
-              writingMode: vertical ? 'vertical-rl' : 'horizontal-tb', 
-              textOrientation: 'upright', 
-              letterSpacing: '0px'
-          }}>
-          {element.text}
-      </div>
+    // --- SVG Icons 替換原先的 lucide-react ---
+    const IconWrapper = ({ size = 24, className = "", style, children }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+        {children}
+      </svg>
     );
 
-    if (element.type === 'box-label') {
-      return (
-        <div style={{ ...commonStyle, width: element.width, height: element.height }} onMouseDown={onSelect}>
-          <div className={`w-full h-full border-4 relative group ${selectionBorder}`} style={{borderColor: itemColor}} onMouseDown={onDragStart}>
-            {isSelected && (
-              <div className="absolute -bottom-3 -right-3 w-6 h-6 bg-white border border-gray-300 rounded-full cursor-se-resize shadow flex items-center justify-center" onMouseDown={(e) => onResizeStart(e, 'box')}>
-                <Move size={12}/>
-              </div>
-            )}
-          </div>
-        </div>
-      );
-    }
-    
-    if (element.type === 'arrow-label') {
-        return (
-          <div style={{ ...commonStyle, width: 40, height: element.height }} onMouseDown={onSelect}>
-              <div className={`w-full h-full relative flex flex-col items-center ${selectionBorder}`} onMouseDown={onDragStart}>
-                  <div className="w-1 flex-1 relative" style={{background: `linear-gradient(to bottom, ${itemColor}80, ${itemColor})`}}>
-                      {element.textSide === 'right' && (
-                          <div className="absolute top-0 left-4 h-full flex flex-col justify-center">
-                              <TextDisplay vertical={true} />
-                          </div>
-                      )}
-                  </div>
-                  {!element.hideArrowHead && <div className="-mt-2 z-10" style={{color: itemColor}}>▼</div>}
-                  {isSelected && <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 w-6 h-6 bg-white border border-gray-300 rounded-full cursor-ns-resize shadow z-20" onMouseDown={(e) => onResizeStart(e, 'height')} />}
-              </div>
-          </div>
-        )
-    }
+    const Upload = (props) => <IconWrapper {...props}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></IconWrapper>;
+    const FileText = (props) => <IconWrapper {...props}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></IconWrapper>;
+    const Presentation = (props) => <IconWrapper {...props}><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/></IconWrapper>;
+    const Move = (props) => <IconWrapper {...props}><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="19 9 22 12 19 15"/><polyline points="9 19 12 22 15 19"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></IconWrapper>;
+    const Calculator = (props) => <IconWrapper {...props}><rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="16" y1="14" x2="16" y2="18"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/></IconWrapper>;
+    const Wand2 = (props) => <IconWrapper {...props}><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></IconWrapper>;
+    const Loader2 = (props) => <IconWrapper {...props}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></IconWrapper>;
+    const Columns = (props) => <IconWrapper {...props}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="12" y1="3" x2="12" y2="21"/></IconWrapper>;
+    const TableIcon = (props) => <IconWrapper {...props}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></IconWrapper>;
+    const Info = (props) => <IconWrapper {...props}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></IconWrapper>;
+    const X = (props) => <IconWrapper {...props}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></IconWrapper>;
+    const Square = (props) => <IconWrapper {...props}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></IconWrapper>;
+    const Edit3 = (props) => <IconWrapper {...props}><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></IconWrapper>;
+    const Trash2 = (props) => <IconWrapper {...props}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></IconWrapper>;
 
-    if (element.type === 'text-only') {
-      return (
-        <div style={{ ...commonStyle }} onMouseDown={onDragStart} className={selectionBorder}>
-          <div style={{ writingMode: element.vertical ? 'vertical-rl' : 'horizontal-tb', textOrientation: 'upright' }}>
-              <TextDisplay vertical={element.vertical} />
-          </div>
-        </div>
-      );
-    }
-    
-    if (element.type === 'box-highlight-blue') return null;
+    const loadScript = (src) => {
+      return new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) {
+          resolve();
+          return;
+        }
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+    };
 
-    return null;
-  };
-
-  const DebugTable = () => {
-      if (!dataMatrix || dataMatrix.length === 0) return null;
+    const App = () => {
+      const [image, setImage] = useState(null);
+      const [elements, setElements] = useState([]);
+      const [selectedId, setSelectedId] = useState(null);
+      const [isPdfLibLoaded, setPdfLibLoaded] = useState(false);
+      const [isExportLibLoaded, setExportLibLoaded] = useState(false);
+      const [isProcessing, setIsProcessing] = useState(false);
+      const [zoom, setZoom] = useState(1);
+      const [showInfoModal, setShowInfoModal] = useState(false);
       
-      const previewRows = dataMatrix.slice(0, 15); 
-      const maxCols = Math.max(...previewRows.map(r => r.length));
-      const colIndices = Array.from({length: maxCols}, (_, i) => i);
+      const [rawTextItems, setRawTextItems] = useState([]);
+      const [gapThreshold, setGapThreshold] = useState(5); 
+      const [themeColor, setThemeColor] = useState('#ef4444');
+      const [defaultFontSize, setDefaultFontSize] = useState(36);
 
-      const getColStyle = (colIdx) => {
-          if (colIdx === colMapping.policyYear) return { bg: 'bg-purple-100', border: 'border-purple-300', label: '年度' };
-          if (colIdx === colMapping.age) return { bg: 'bg-yellow-100', border: 'border-yellow-300', label: '年齡' };
-          if (colIdx === colMapping.prem) return { bg: 'bg-green-100', border: 'border-green-300', label: '保費' };
-          if (colIdx === colMapping.cashVal) return { bg: 'bg-blue-100', border: 'border-blue-300', label: '解約' };
-          if (colIdx === colMapping.withdraw) return { bg: 'bg-orange-100', border: 'border-orange-300', label: '領取' };
-          return { bg: 'bg-white', border: 'border-gray-200', label: colIdx };
+      const [pageDimensions, setPageDimensions] = useState([]);
+      const [analysisResult, setAnalysisResult] = useState(null);
+      const [dataMatrix, setDataMatrix] = useState(null); 
+      const [columnCoords, setColumnCoords] = useState([]); 
+      const [highlightSourceId, setHighlightSourceId] = useState(null);
+
+      const [colMapping, setColMapping] = useState({
+          policyYear: 0, 
+          age: 1,      
+          prem: 2,      
+          cashVal: 5,   
+          withdraw: 6   
+      });
+
+      const containerRef = useRef(null);
+      const fileInputRef = useRef(null);
+      const mainScrollRef = useRef(null);
+
+      useEffect(() => {
+        if (window.pdfjsLib) {
+          setPdfLibLoaded(true);
+        } else {
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+          script.async = true;
+          script.onload = () => {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+            setPdfLibLoaded(true);
+          };
+          document.head.appendChild(script);
+        }
+
+        Promise.all([
+          loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'),
+          loadScript('https://cdn.jsdelivr.net/gh/gitbrent/pptxgenjs@3.12.0/dist/pptxgen.bundle.js')
+        ]).then(() => {
+          setExportLibLoaded(true);
+        }).catch(err => console.error("Export libs failed", err));
+
+      }, []);
+
+      useEffect(() => {
+          if (dataMatrix && columnCoords.length > 0) {
+              performBusinessLogicAnalysis(dataMatrix, columnCoords);
+          }
+      }, [colMapping, dataMatrix]); 
+
+      useEffect(() => {
+        if (rawTextItems.length > 0) {
+          generateColumnAnnotations(rawTextItems, gapThreshold);
+        }
+      }, [gapThreshold, rawTextItems]);
+
+      useEffect(() => {
+        setElements(prev => prev.map(el => {
+          if (['box-label', 'arrow-label', 'text-only'].includes(el.type)) {
+            return { ...el, color: themeColor };
+          }
+          return el;
+        }));
+      }, [themeColor]);
+
+      const handleZoomIn = () => setZoom(prev => Math.min(prev + 0.1, 3));
+      const handleZoomOut = () => setZoom(prev => Math.max(prev - 0.1, 0.2));
+      const handleZoomReset = () => setZoom(1);
+      
+      useEffect(() => {
+        const handleWheel = (e) => {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            if (e.deltaY < 0) {
+              setZoom(prev => Math.min(prev + 0.1, 3));
+            } else {
+              setZoom(prev => Math.max(prev - 0.1, 0.2));
+            }
+          }
+        };
+        
+        const container = mainScrollRef.current;
+        if (container) {
+          container.addEventListener('wheel', handleWheel, { passive: false });
+        }
+        return () => {
+          if (container) {
+            container.removeEventListener('wheel', handleWheel);
+          }
+        };
+      }, []);
+
+      const splitCombinedItems = (items) => {
+          const newItems = [];
+          items.forEach(item => {
+              const s = item.str.trim();
+              if (/^\d+\s+\d+$/.test(s) && !s.includes(',')) {
+                  const parts = s.split(/\s+/);
+                  if (parts.length === 2) {
+                      const val1 = parts[0];
+                      const val2 = parts[1];
+                      
+                      const totalLen = s.length;
+                      const w1 = (val1.length / totalLen) * item.width;
+                      const w2 = (val2.length / totalLen) * item.width;
+                      
+                      newItems.push({ ...item, str: val1, width: w1 });
+                      newItems.push({ ...item, str: val2, width: w2, x: item.x + (item.width - w2) });
+                      return;
+                  }
+              }
+              newItems.push(item);
+          });
+          return newItems;
       };
 
-      const avgPremThreshold = analysisResult?.avgPremThreshold || 0;
-
-      return (
-          <div className="mt-4 p-4 bg-white border rounded-lg shadow-sm overflow-x-auto">
-              <div className="flex justify-between items-center mb-2">
-                  <h3 className="font-bold text-gray-700 flex items-center gap-2">
-                      <Table size={16} /> 數據透視與校正
-                  </h3>
-                  <div className="text-xs text-gray-500">
-                      若數值錯誤，請修改下方對應欄位
-                  </div>
-              </div>
+      const snapToRows = (items) => {
+          if (items.length === 0) return [];
+          const sorted = [...items].sort((a, b) => a.y - b.y);
+          const rows = [];
+          let currentRow = [sorted[0]];
+          
+          for (let i = 1; i < sorted.length; i++) {
+              const item = sorted[i];
+              const prev = currentRow[currentRow.length - 1];
+              const centerDiff = Math.abs((item.y + item.height/2) - (prev.y + prev.height/2));
               
-              <div className="grid grid-cols-5 gap-2 mb-4 text-sm">
-                  <div className="flex flex-col">
-                      <label className="text-gray-600 font-bold mb-1 text-xs">年度 (紫)</label>
-                      <select 
-                          value={colMapping.policyYear} 
-                          onChange={e => setColMapping({...colMapping, policyYear: Number(e.target.value)})}
-                          className="border rounded p-1 text-xs"
-                      >
-                          {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
-                      </select>
+              if (centerDiff < 15) {
+                  currentRow.push(item);
+              } else {
+                  rows.push(currentRow);
+                  currentRow = [item];
+              }
+          }
+          rows.push(currentRow);
+          
+          const alignedItems = [];
+          rows.forEach(row => {
+              const avgY = row.reduce((sum, it) => sum + it.y, 0) / row.length;
+              const avgHeight = row.reduce((sum, it) => sum + it.height, 0) / row.length;
+              row.forEach(it => {
+                  alignedItems.push({ ...it, y: avgY, height: avgHeight });
+              });
+          });
+          return alignedItems;
+      };
+
+      const mergeCloseItems = (items) => {
+          const byRow = {};
+          items.forEach(item => {
+              const yKey = item.y.toFixed(3);
+              if (!byRow[yKey]) byRow[yKey] = [];
+              byRow[yKey].push(item);
+          });
+          const merged = [];
+          Object.values(byRow).forEach(rowItems => {
+              rowItems.sort((a, b) => a.x - b.x);
+              if (rowItems.length === 0) return;
+              let current = rowItems[0];
+              for (let i = 1; i < rowItems.length; i++) {
+                  const next = rowItems[i];
+                  const gap = next.x - (current.x + current.width);
+                  
+                  const isCurrentInt = /^\d+$/.test(current.str.trim());
+                  const isNextInt = /^\d+$/.test(next.str.trim());
+                  const isBothIntegers = isCurrentInt && isNextInt;
+
+                  const dynamicThreshold = isBothIntegers ? 5 : 20;
+
+                  if (gap < dynamicThreshold) {
+                      current.str += next.str;
+                      current.width = (next.x + next.width) - current.x;
+                      current.height = Math.max(current.height, next.height);
+                  } else {
+                      merged.push(current);
+                      current = next;
+                  }
+              }
+              merged.push(current);
+          });
+          return merged;
+      };
+
+      const filterTableData = (items) => {
+        const tableKeywords = ['年度', '年齡', '保費', '解約金', '保險金額', '給付', '折扣後', '累計'];
+        const rowBuckets = {}; 
+        items.forEach(item => {
+          const yBucket = Math.round(item.y / 10) * 10;
+          const cleanStr = item.str.replace(/\s+/g, ''); 
+          if (tableKeywords.some(k => cleanStr.includes(k))) {
+            rowBuckets[yBucket] = (rowBuckets[yBucket] || 0) + 1;
+          }
+        });
+
+        let bestY = 0;
+        let maxScore = 0;
+        Object.entries(rowBuckets).forEach(([y, score]) => {
+          if (score > maxScore) { maxScore = score; bestY = parseInt(y); }
+        });
+
+        const numberPattern = /^[0-9,\.\-\(\)\s]+$/; 
+        const hasDigit = /\d/;
+
+        if (maxScore === 0) {
+            return items.filter(item => {
+                const s = item.str.trim();
+                return s.length > 0 && hasDigit.test(s);
+            });
+        }
+
+        const pageHeaderThreshold = bestY + 20;
+
+        return items.filter(item => {
+          const s = item.str.trim();
+          const isNumber = s.length > 0 && hasDigit.test(s) && numberPattern.test(s);
+          const isBelowHeader = item.y > pageHeaderThreshold;
+          return isNumber && isBelowHeader;
+        });
+      };
+
+      const processMultiPagePdf = async (pdf) => {
+        const numPages = pdf.numPages;
+        const scale = 4.0; 
+        let totalHeight = 0;
+        let maxWidth = 0;
+        const pageDims = [];
+        const pageData = [];
+
+        for (let i = 1; i <= numPages; i++) {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale });
+          const textContent = await page.getTextContent();
+          pageDims.push({
+            pageIndex: i - 1,
+            width: viewport.width,
+            height: viewport.height,
+            startY: totalHeight,
+            endY: totalHeight + viewport.height
+          });
+          pageData.push({ page, viewport, textContent, offsetY: totalHeight });
+          totalHeight += viewport.height;
+          maxWidth = Math.max(maxWidth, viewport.width);
+        }
+        setPageDimensions(pageDims);
+
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        canvas.width = maxWidth;
+        canvas.height = totalHeight;
+        context.fillStyle = '#FFFFFF';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        
+        const allRawItems = [];
+        for (const data of pageData) {
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = data.viewport.width;
+          tempCanvas.height = data.viewport.height;
+          const tempCtx = tempCanvas.getContext('2d');
+          await data.page.render({ canvasContext: tempCtx, viewport: data.viewport }).promise;
+          context.drawImage(tempCanvas, 0, data.offsetY);
+          data.textContent.items.forEach(item => {
+            const tx = item.transform; 
+            const [vx, vy] = data.viewport.convertToViewportPoint(tx[4], tx[5]);
+            const fontScaleY = Math.sqrt(tx[2]*tx[2] + tx[3]*tx[3]);
+            const realHeight = (fontScaleY * scale) || (item.height * scale) || (12 * scale);
+            allRawItems.push({
+              str: item.str,
+              x: vx, y: vy + data.offsetY, width: item.width * scale, height: realHeight 
+            });
+          });
+        }
+
+        const splitItems = splitCombinedItems(allRawItems); 
+        const alignedItems = snapToRows(splitItems); 
+        const mergedItems = mergeCloseItems(alignedItems); 
+        const allFilteredItems = filterTableData(mergedItems);
+
+        const finalImageUrl = canvas.toDataURL('image/jpeg', 0.95);
+        setImage(finalImageUrl);
+        if (mainScrollRef.current) {
+            const containerWidth = mainScrollRef.current.clientWidth - 400; 
+            if (maxWidth > containerWidth) setZoom(Math.max(0.4, containerWidth / maxWidth));
+        }
+        setRawTextItems(allFilteredItems);
+        generateColumnAnnotations(allFilteredItems, gapThreshold);
+      };
+
+      const performBusinessLogicAnalysis = (inputMatrix, columns) => {
+        setDataMatrix(inputMatrix);
+        setColumnCoords(columns);
+
+        const getVal = (rowIdx, colIdx) => {
+            if (!inputMatrix[rowIdx] || !inputMatrix[rowIdx][colIdx]) return 0;
+            const str = inputMatrix[rowIdx][colIdx].str.replace(/,/g, '').trim();
+            return parseFloat(str) || 0;
+        };
+        const getItem = (rowIdx, colIdx) => {
+            if (!inputMatrix[rowIdx] || !inputMatrix[rowIdx][colIdx]) return null;
+            return inputMatrix[rowIdx][colIdx];
+        }
+
+        const C_PREM = colMapping.prem;
+        const C_CASH_VAL = colMapping.cashVal;
+        const C_WITHDRAW = colMapping.withdraw;
+        const C_AGE = colMapping.age;
+
+        let premSum = 0;
+        let premCount = 0;
+        for(let i=0; i<Math.min(10, inputMatrix.length); i++) {
+            const val = getVal(i, C_PREM);
+            if (val > 100) { 
+                premSum += val;
+                premCount++;
+            }
+        }
+        const avgPrem = premCount > 0 ? premSum / premCount : 0;
+
+        const res = {};
+        let paymentTerm = 0;
+        let totalPremium = 0;
+
+        inputMatrix.forEach(row => { 
+            const val = getVal(inputMatrix.indexOf(row), C_PREM);
+            const isNoise = avgPrem > 0 && val < avgPrem * 0.1; 
+            
+            if (val > 0 && !isNoise) {
+                paymentTerm++;
+                totalPremium += val;
+            }
+        });
+        
+        res.paymentTerm = paymentTerm;
+        res.totalPremium = totalPremium;
+
+        res.breakevenRowIdx = paymentTerm > 0 ? paymentTerm - 1 : 0;
+        res.breakevenValue = getVal(res.breakevenRowIdx, C_CASH_VAL);
+        res.breakevenItem = getItem(res.breakevenRowIdx, C_CASH_VAL);
+
+        let startWithdrawRowIdx = -1;
+        for (let i = 0; i < inputMatrix.length; i++) {
+            if (getVal(i, C_WITHDRAW) > 0) { startWithdrawRowIdx = i; break; }
+        }
+        res.startWithdrawRowIdx = startWithdrawRowIdx;
+        res.startAge = startWithdrawRowIdx !== -1 ? getVal(startWithdrawRowIdx, C_AGE) : '-';
+        res.startAgeItem = startWithdrawRowIdx !== -1 ? getItem(startWithdrawRowIdx, C_AGE) : null;
+
+        let withdrawRows = [];
+        inputMatrix.forEach((row, idx) => {
+            const val = getVal(idx, C_WITHDRAW);
+            if (val > 0) withdrawRows.push({ val, idx });
+        });
+        let withdrawCount = withdrawRows.length;
+        let validWithdrawals = [...withdrawRows];
+        if (withdrawCount > 1) {
+            const sumVal = withdrawRows.reduce((a, b) => a + b.val, 0);
+            const avg = sumVal / withdrawCount;
+            const last = withdrawRows[withdrawRows.length - 1];
+            if (last.val < avg * 0.9) { withdrawCount--; validWithdrawals.pop(); }
+        }
+        res.withdrawCount = withdrawCount;
+        res.validWithdrawals = validWithdrawals;
+
+        const calculatedTotalWithdraw = withdrawRows.reduce((acc, curr) => acc + curr.val, 0);
+        res.totalWithdraw = calculatedTotalWithdraw;
+        res.withdrawRatio = totalPremium > 0 ? (res.totalWithdraw / totalPremium).toFixed(2) : 0;
+        
+        if(withdrawRows.length > 0) {
+            const lastW = withdrawRows[withdrawRows.length-1];
+            res.totalWithdrawItem = getItem(lastW.idx, C_WITHDRAW);
+        }
+
+        let finalCashValue = 0;
+        let finalCashValueItem = null;
+        for(let i=inputMatrix.length-1; i>=0; i--) {
+            const v = getVal(i, C_CASH_VAL);
+            if(v > 0) { finalCashValue = v; finalCashValueItem = getItem(i, C_CASH_VAL); break; }
+        }
+        res.finalCashValue = finalCashValue;
+        res.finalCashValueItem = finalCashValueItem;
+        res.finalRatio = totalPremium > 0 ? (res.finalCashValue / totalPremium).toFixed(2) : 0;
+        
+        res.avgPremThreshold = avgPrem * 0.1;
+
+        setAnalysisResult(res);
+      };
+
+      const generateColumnAnnotations = (items, currentThreshold) => {
+        const xCenters = items.map(item => item.x + (item.width/2));
+        const clusters = [];
+        const tolerance = currentThreshold; 
+        xCenters.forEach(x => {
+            let bestCluster = null;
+            let minDiff = Infinity;
+            for (const cluster of clusters) {
+              const avgX = cluster.sum / cluster.count;
+              const diff = Math.abs(x - avgX);
+              if (diff < minDiff) { minDiff = diff; bestCluster = cluster; }
+            }
+            if (bestCluster && minDiff < tolerance) { bestCluster.sum += x; bestCluster.count += 1; } 
+            else { clusters.push({ sum: x, count: 1 }); }
+        });
+        const maxCount = Math.max(...clusters.map(c => c.count));
+        const densityThreshold = maxCount * 0.15;
+        let finalClusters = clusters.filter(c => c.count > densityThreshold).map(c => c.sum / c.count).sort((a, b) => a - b);
+        
+        const mergedColumns = [];
+        if (finalClusters.length > 0) {
+            let current = finalClusters[0];
+            for (let i = 1; i < finalClusters.length; i++) {
+                if (finalClusters[i] - current < tolerance) { current = (current + finalClusters[i]) / 2; } 
+                else { mergedColumns.push(current); current = finalClusters[i]; }
+            }
+            mergedColumns.push(current);
+        } else { mergedColumns.push(...finalClusters); }
+        
+        const matrix = []; 
+        const rowMap = {};
+        const rowTolerance = 15; 
+        
+        items.forEach(item => {
+            let foundRowY = null;
+            for (const yKey in rowMap) {
+                if (Math.abs(item.y - parseFloat(yKey)) < rowTolerance) {
+                    foundRowY = yKey;
+                    break;
+                }
+            }
+            if (!foundRowY) {
+                foundRowY = item.y;
+                rowMap[foundRowY] = [];
+            }
+            rowMap[foundRowY].push(item);
+        });
+        
+        const sortedRowYs = Object.keys(rowMap).sort((a, b) => parseFloat(a) - parseFloat(b));
+        sortedRowYs.forEach(yKey => {
+            const rowItems = rowMap[yKey];
+            const rowData = new Array(mergedColumns.length).fill(null);
+            rowItems.forEach(item => {
+                const itemCenter = item.x + item.width / 2;
+                let closestColIdx = -1;
+                let minDiff = Infinity;
+                mergedColumns.forEach((colX, idx) => {
+                    const diff = Math.abs(itemCenter - colX);
+                    if (diff < minDiff) { minDiff = diff; closestColIdx = idx; }
+                });
+                if (closestColIdx !== -1) rowData[closestColIdx] = item;
+            });
+            matrix.push(rowData);
+        });
+
+        performBusinessLogicAnalysis(matrix, mergedColumns);
+      };
+
+      const formatWan = (val) => {
+        if (!val) return '0';
+        const w = Math.floor((val / 10000) * 10) / 10;
+        return `${w}萬`;
+      };
+
+      const generateMarketingAnnotations = () => {
+        if (!analysisResult || !dataMatrix) {
+            alert("請先上傳 PDF 並等待分析完成。");
+            return;
+        }
+        const { 
+            paymentTerm, totalPremium, breakevenRowIdx, breakevenValue, 
+            startWithdrawRowIdx, startAge, withdrawCount, totalWithdraw, withdrawRatio,
+            finalCashValue, finalRatio, totalWithdrawItem, finalCashValueItem, validWithdrawals 
+        } = analysisResult;
+        
+        const C_PREM = colMapping.prem;
+        const C_CASH_VAL = colMapping.cashVal;
+        const C_WITHDRAW = colMapping.withdraw;
+
+        const newElements = [];
+        const timestamp = Date.now();
+        const maxPageWidth = pageDimensions.length > 0 ? pageDimensions[0].width : 800;
+        const safeRightX = maxPageWidth - 320; 
+        const rightMarginX = columnCoords.length > 0 ? Math.min(columnCoords[columnCoords.length-1] + 100, safeRightX) : safeRightX;
+        const PAD = 8; 
+        const FONT_SIZE = defaultFontSize;
+
+        const addBoxAndText = (boxRect, text, textPos, style, vertical = false) => {
+            const cleanText = text.replace(/\s+/g, ''); 
+            newElements.push({
+                id: `mk-${timestamp}-box-${newElements.length}`,
+                type: 'box-label', 
+                text: '', 
+                x: boxRect.x, y: boxRect.y, width: boxRect.w, height: boxRect.h,
+                color: themeColor,
+                style: 'none'
+            });
+            newElements.push({
+                id: `mk-${timestamp}-text-${newElements.length}`,
+                type: 'text-only',
+                text: cleanText,
+                x: textPos.x, y: textPos.y,
+                color: themeColor,
+                fontSize: FONT_SIZE,
+                vertical: vertical
+            });
+        };
+
+        const startRowItem = (dataMatrix[0] && dataMatrix[0][C_PREM]) ? dataMatrix[0][C_PREM] : null;
+        const endRowItem = (dataMatrix[paymentTerm-1] && dataMatrix[paymentTerm-1][C_PREM]) ? dataMatrix[paymentTerm-1][C_PREM] : null;
+
+        if (startRowItem && endRowItem) {
+            const boxTop = startRowItem.y - startRowItem.height - PAD;
+            const boxBottom = endRowItem.y + PAD; 
+            const boxHeight = boxBottom - boxTop;
+            const textX = startRowItem.x - 80; 
+            const textY = boxTop;
+            addBoxAndText({ x: startRowItem.x - 10, y: boxTop, w: startRowItem.width + 20, h: boxHeight }, `1.只要存${paymentTerm}年`, { x: textX, y: textY }, 'left', true);
+        }
+
+        const breakevenItem = (dataMatrix[breakevenRowIdx] && dataMatrix[breakevenRowIdx][C_CASH_VAL]) ? dataMatrix[breakevenRowIdx][C_CASH_VAL] : null;
+        if (breakevenItem) {
+            const boxTop = breakevenItem.y - breakevenItem.height - PAD;
+            const h = breakevenItem.height + PAD * 2;
+            const textX = breakevenItem.x - 120;
+            const textY = boxTop - 20;
+            addBoxAndText({ x: breakevenItem.x - 5, y: boxTop, w: breakevenItem.width + 10, h: h }, `2.期滿保本隨時可動用`, { x: textX, y: textY }, 'left', true);
+        }
+
+        if (breakevenItem && startWithdrawRowIdx !== -1) {
+            const withdrawStartItem = (dataMatrix[startWithdrawRowIdx] && dataMatrix[startWithdrawRowIdx][C_WITHDRAW]) ? dataMatrix[startWithdrawRowIdx][C_WITHDRAW] : null;
+            if (withdrawStartItem) {
+                const startX = (breakevenItem.x + withdrawStartItem.x) / 2;
+                const startY = breakevenItem.y + 40; 
+                const endY = withdrawStartItem.y - withdrawStartItem.height - 40; 
+                let splitY = null;
+                if (pageDimensions.length > 1) {
+                    const startPage = pageDimensions.find(p => startY >= p.startY && startY < p.endY);
+                    const endPage = pageDimensions.find(p => endY >= p.startY && endY < p.endY);
+                    if (startPage && endPage && startPage.pageIndex !== endPage.pageIndex) {
+                        splitY = startPage.endY; 
+                    }
+                }
+                if (splitY) {
+                    newElements.push({ id: `mk-${timestamp}-3-1`, type: 'arrow-label', text: '3.時間與複利增值(接下頁)', x: startX, y: startY, height: splitY - startY - 20, color: themeColor, hideArrowHead: true, textSide: 'right', fontSize: FONT_SIZE });
+                    newElements.push({ id: `mk-${timestamp}-3-2`, type: 'arrow-label', text: '(承上頁)持續增值', x: startX, y: splitY + 20, height: endY - (splitY + 20), color: themeColor, textSide: 'right', fontSize: FONT_SIZE });
+                } else {
+                    newElements.push({ id: `mk-${timestamp}-3`, type: 'arrow-label', text: '3.時間與複利增值', x: startX, y: startY, height: endY - startY, color: themeColor, textSide: 'right', fontSize: FONT_SIZE });
+                }
+            }
+        }
+
+        let refY = 300; 
+        if (dataMatrix[0]) {
+            const firstValidItem = dataMatrix[0].find(item => item !== null);
+            if (firstValidItem) {
+                refY = firstValidItem.y;
+            }
+        }
+        
+        newElements.push({ id: `mk-${timestamp}-4`, type: 'text-only', text: '4.保單的增值免課健保補充保費', x: rightMarginX, y: (refY + 100), color: themeColor, fontSize: FONT_SIZE, vertical: true });
+
+        if (validWithdrawals && validWithdrawals.length > 0) {
+            const withdrawItems = validWithdrawals.map(v => (dataMatrix[v.idx] && dataMatrix[v.idx][C_WITHDRAW]) ? dataMatrix[v.idx][C_WITHDRAW] : null).filter(i => i !== null);
+            const segments = [];
+            if (withdrawItems.length > 0) {
+                let currentSegment = [withdrawItems[0]];
+                const PAGE_GAP_THRESHOLD = 100;
+                for (let i = 1; i < withdrawItems.length; i++) {
+                    const prev = withdrawItems[i-1];
+                    const curr = withdrawItems[i];
+                    if ((curr.y - prev.y) > PAGE_GAP_THRESHOLD) {
+                        segments.push(currentSegment);
+                        currentSegment = [curr];
+                    } else {
+                        currentSegment.push(curr);
+                    }
+                }
+                segments.push(currentSegment);
+                segments.forEach((seg, idx) => {
+                    const first = seg[0];
+                    const last = seg[seg.length - 1];
+                    const labelText = idx === 0 ? `5.${startAge}歲起每年領回` : "";
+                    const boxTop = first.y - first.height - PAD;
+                    const boxBottom = last.y + PAD; 
+                    const boxHeight = boxBottom - boxTop;
+                    addBoxAndText({ x: first.x - 5, y: boxTop, w: first.width + 10, h: boxHeight }, labelText, { x: first.x - 80, y: boxTop }, 'left', true);
+                });
+            }
+        }
+
+        if (totalWithdrawItem) {
+            const formattedTotal = formatWan(analysisResult.totalWithdraw);
+            const boxTop = totalWithdrawItem.y - totalWithdrawItem.height - PAD;
+            const w = totalWithdrawItem.width + 10;
+            const h = totalWithdrawItem.height + PAD * 2;
+            addBoxAndText({ x: totalWithdrawItem.x - 5, y: boxTop, w, h }, `6.可領${withdrawCount}次,總領${formattedTotal}(${withdrawRatio}倍)`, { x: totalWithdrawItem.x - 5, y: boxTop + h + 10 }, 'bottom', false);
+        }
+
+        if (finalCashValueItem) {
+             const formattedValue = formatWan(finalCashValue);
+             const boxTop = finalCashValueItem.y - finalCashValueItem.height - PAD;
+             const w = finalCashValueItem.width + 10;
+             const h = finalCashValueItem.height + PAD * 2;
+             addBoxAndText({ x: finalCashValueItem.x - 5, y: boxTop, w, h }, `7.也可以不領,最高增值到${formattedValue}(${finalRatio}倍)`, { x: finalCashValueItem.x + w + 10, y: boxTop }, 'right', false);
+        }
+
+        const lastPage = pageDimensions.length > 0 ? pageDimensions[pageDimensions.length-1] : { endY: 1000, startY: 0 };
+        const footerStartY = lastPage.endY - 200; 
+        newElements.push({ id: `mk-${timestamp}-8`, type: 'text-only', text: '8.身故受益金不計入遺產', x: 100, y: footerStartY, color: themeColor, fontSize: FONT_SIZE, vertical: false });
+        newElements.push({ id: `mk-${timestamp}-9`, type: 'text-only', text: '9.如您心意,分給所愛,不受應繼分特留分限制', x: 100, y: footerStartY + 120, color: themeColor, fontSize: FONT_SIZE, vertical: false });
+
+        const cleanElements = elements.filter(e => !e.isHeader);
+        setElements([...cleanElements, ...newElements]);
+        alert("✨ 行銷說明圖已生成！");
+      };
+
+      const handleExportPDF = async () => {
+        if (!image || !window.jspdf) return;
+        setIsProcessing(true);
+        try {
+            const { jsPDF } = window.jspdf;
+            const firstPage = pageDimensions[0];
+            const doc = new jsPDF({
+                orientation: firstPage.width > firstPage.height ? 'l' : 'p',
+                unit: 'px', 
+                format: [firstPage.width, firstPage.height]
+            });
+            for (let i = 0; i < pageDimensions.length; i++) {
+                const page = pageDimensions[i];
+                if (i > 0) {
+                    doc.addPage([page.width, page.height], page.width > page.height ? 'l' : 'p');
+                }
+                const canvas = document.createElement('canvas');
+                const scaleFactor = 3.0; 
+                canvas.width = page.width * scaleFactor;
+                canvas.height = page.height * scaleFactor;
+                const ctx = canvas.getContext('2d');
+                ctx.scale(scaleFactor, scaleFactor);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillRect(0, 0, page.width, page.height);
+                const img = new Image();
+                await new Promise(r => { img.onload=r; img.src=image; });
+                ctx.drawImage(img, 0, page.startY, page.width, page.height, 0,0,page.width, page.height);
+                const pageElements = elements.filter(el => el.y >= page.startY && el.y < page.endY);
+                pageElements.forEach(el => {
+                    const x = el.x; const y = el.y - page.startY; const w = el.width || 0; const h = el.height || 0;
+                    if (el.type === 'box-label' || el.type.startsWith('box-highlight')) {
+                        ctx.lineWidth = 3;
+                        ctx.strokeStyle = el.color || '#ef4444';
+                        ctx.strokeRect(x, y, w, h);
+                    } else if (el.type === 'arrow-label') {
+                        ctx.beginPath(); ctx.moveTo(x + w/2, y); ctx.lineTo(x + w/2, y + h);
+                        ctx.lineWidth = 4; ctx.strokeStyle = el.color || '#ef4444'; ctx.stroke();
+                        if (!el.hideArrowHead) { ctx.beginPath(); ctx.moveTo(x+w/2-8, y+h-12); ctx.lineTo(x+w/2, y+h); ctx.lineTo(x+w/2+8, y+h-12); ctx.stroke(); }
+                        if (el.textSide === 'right') {
+                           drawTextWithBackground(ctx, el.text, x + 36, y + 20, { vertical: true, fontSize: el.fontSize, color: el.color });
+                        }
+                    } else if (el.type === 'text-only') {
+                        drawTextWithBackground(ctx, el.text, x, y, { vertical: el.vertical, fontSize: el.fontSize, color: el.color });
+                    }
+                });
+                const finalPageData = canvas.toDataURL('image/jpeg', 0.90);
+                doc.addImage(finalPageData, 'JPEG', 0, 0, page.width, page.height);
+            }
+            doc.save("保單分析.pdf");
+        } catch (e) { console.error(e); alert("匯出 PDF 失敗"); }
+        setIsProcessing(false);
+      };
+
+      const drawTextWithBackground = (ctx, text, x, y, options = {}) => {
+          const { vertical, fontSize = 24, color = '#ef4444' } = options;
+          ctx.font = `bold ${fontSize}px sans-serif`;
+          ctx.textBaseline = 'top';
+          const paddingX = 8;
+          const paddingY = 4;
+          
+          if (vertical) {
+              const chars = text.split('');
+              const charHeight = fontSize * 1.1;
+              const totalHeight = chars.length * charHeight;
+              const width = fontSize + paddingX * 2;
+              const height = totalHeight + paddingY * 2;
+              
+              ctx.fillStyle = '#FFFFFF';
+              ctx.shadowColor = "rgba(0, 0, 0, 0.2)";
+              ctx.shadowBlur = 4;
+              ctx.shadowOffsetX = 1;
+              ctx.shadowOffsetY = 1;
+              ctx.fillRect(x, y, width, height);
+              
+              ctx.strokeStyle = color;
+              ctx.lineWidth = 1;
+              ctx.strokeRect(x, y, width, height);
+              ctx.shadowColor = "transparent";
+              ctx.fillStyle = color;
+              chars.forEach((c, i) => {
+                  const m = ctx.measureText(c);
+                  const cx = x + paddingX + (fontSize - m.width)/2;
+                  ctx.fillText(c, cx, y + paddingY + (i * charHeight));
+              });
+          } else {
+              const metrics = ctx.measureText(text);
+              const width = metrics.width + paddingX * 2;
+              const height = fontSize * 1.3 + paddingY * 2;
+              
+              ctx.fillStyle = '#FFFFFF';
+              ctx.shadowColor = "rgba(0, 0, 0, 0.2)";
+              ctx.shadowBlur = 4;
+              ctx.shadowOffsetX = 1;
+              ctx.shadowOffsetY = 1;
+              ctx.fillRect(x, y, width, height);
+              
+              ctx.strokeStyle = color;
+              ctx.lineWidth = 1;
+              ctx.strokeRect(x, y, width, height);
+              ctx.shadowColor = "transparent";
+              ctx.fillStyle = color;
+              ctx.fillText(text, x + paddingX, y + paddingY + 2); 
+          }
+      };
+
+      const handleExportPPTX = async () => {
+        if (!image || !window.PptxGenJS) return;
+        setIsProcessing(true);
+        try {
+            const pptx = new window.PptxGenJS();
+            const firstPage = pageDimensions[0];
+            const isPortrait = firstPage && firstPage.height > firstPage.width;
+            
+            if (isPortrait) {
+                pptx.defineLayout({ name: 'A4_PORTRAIT', width: 8.27, height: 11.69 });
+                pptx.layout = 'A4_PORTRAIT';
+            } else {
+                pptx.layout = 'LAYOUT_16x9'; 
+            }
+
+            for (let i = 0; i < pageDimensions.length; i++) {
+                const slide = pptx.addSlide();
+                const page = pageDimensions[i];
+                
+                const bgCanvas = document.createElement('canvas');
+                bgCanvas.width = page.width;
+                bgCanvas.height = page.height;
+                const bgCtx = bgCanvas.getContext('2d');
+                bgCtx.fillStyle = '#FFFFFF';
+                bgCtx.fillRect(0,0,page.width, page.height);
+                const img = new Image();
+                await new Promise(r => { img.onload=r; img.src=image; });
+                bgCtx.drawImage(img, 0, page.startY, page.width, page.height, 0,0,page.width, page.height);
+                const bgData = bgCanvas.toDataURL('image/jpeg', 0.9);
+
+                slide.addImage({ data: bgData, x: 0, y: 0, w: '100%', h: '100%' });
+
+                const pageElements = elements.filter(el => 
+                    el.y >= page.startY && el.y < page.endY
+                );
+
+                const s = (val) => {
+                    if (typeof val !== 'number' || !isFinite(val)) return 0;
+                    return parseFloat(val.toFixed(1));
+                };
+
+                pageElements.forEach(el => {
+                    const relativeY = el.y - page.startY;
+                    const xPct = s((el.x / page.width) * 100);
+                    const yPct = s((relativeY / page.height) * 100);
+                    const wPct = s((el.width / page.width) * 100);
+                    const hPct = s((el.height / page.height) * 100);
+                    
+                    const col = (el.color || '#ef4444').replace('#', '');
+
+                    if (el.type === 'box-label') {
+                        slide.addShape(pptx.ShapeType.rect, { x: xPct+'%', y: yPct+'%', w: wPct+'%', h: hPct+'%', line: { color: col, width: 2 }, fill: { type: 'none' } });
+                    } else if (el.type === 'arrow-label') {
+                        slide.addShape(pptx.ShapeType.line, { x: (s(el.x) + s(el.width)/2)/page.width*100 + '%', y: yPct+'%', w: 0, h: hPct+'%', line: { color: col, width: 3, endArrowType: 'triangle' } });
+                        if (el.textSide === 'right') {
+                           slide.addText(el.text.split('').join('\n'), { 
+                               shape: pptx.ShapeType.rect,
+                               x: (s(el.x) + s(el.width) + 10)/page.width*100 + '%', 
+                               y: relativeY/page.height*100 + '%', 
+                               w: 0.6, h: 2, 
+                               color: col, bold: true, fontSize: 12, 
+                               fill: {color:'FFFFFF'}, 
+                               line: { color: col, width: 1 }, 
+                               shadow: { type: 'outer', color: '000000', opacity: 0.3, blur: 3, offset: 3 },
+                               lineSpacing: 12 
+                           });
+                        }
+                    } else if (el.type === 'text-only') {
+                        const text = el.vertical ? el.text.split('').join('\n') : el.text;
+                        const wVal = el.vertical ? 5 : (text.length * 1.5 + 5); 
+                        const hVal = el.vertical ? (text.length * 2 + 5) : 5;
+                        
+                        slide.addText(text, { 
+                            shape: pptx.ShapeType.rect,
+                            x: xPct+'%', y: yPct+'%', 
+                            w: wVal+'%', h: hVal+'%', 
+                            color: col, bold: true, fontSize: 14, 
+                            fill: {color:'FFFFFF'},
+                            line: { color: col, width: 1 },
+                            shadow: { type: 'outer', color: '000000', opacity: 0.3, blur: 3, offset: 3 }
+                        });
+                    }
+                });
+            }
+            pptx.writeFile({ fileName: "保單分析.pptx" });
+        } catch (e) { console.error(e); alert("匯出 PPT 失敗: " + e.message); }
+        setIsProcessing(false);
+      };
+
+      const processPdfFile = async (file) => {
+        if (!isPdfLibLoaded) { alert('PDF 轉換核心載入中...'); return; }
+        setIsProcessing(true);
+        setAnalysisResult(null);
+        setDataMatrix(null);
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          const pdf = await window.pdfjsLib.getDocument(arrayBuffer).promise;
+          await processMultiPagePdf(pdf);
+        } catch (error) { console.error(error); alert('PDF 讀取失敗。'); } 
+        finally { setIsProcessing(false); }
+      };
+
+      const handleFiles = (e) => {
+          const files = e.target.files;
+          if (!files || files.length === 0) return;
+          const firstFile = files[0];
+          if (firstFile.type === 'application/pdf') { processPdfFile(firstFile); } 
+          else { alert("僅支援 PDF 檔案上傳"); }
+      };
+
+      const addElement = (preset) => {
+        const id = Date.now().toString() + Math.random();
+        setElements(prev => [...prev, { id, x: (100 / zoom), y: (300 / zoom), ...preset, color: themeColor, fontSize: defaultFontSize }]);
+        setSelectedId(id);
+      };
+
+      const deleteElement = (id) => {
+        setElements(elements.filter(el => el.id !== id));
+        setSelectedId(null);
+      };
+      
+      const handleUpdateText = (id, text) => {
+        setElements(prev => prev.map(item => item.id === id ? { ...item, text } : item));
+      };
+      
+      const handleUpdateFontSize = (id, size) => {
+        setElements(prev => prev.map(item => item.id === id ? { ...item, fontSize: Number(size) } : item));
+      };
+
+      const handleDragStart = (e, id) => {
+        e.stopPropagation(); setSelectedId(id);
+        const el = elements.find(el => el.id === id); if(!el) return;
+        const startX = e.clientX; const startY = e.clientY; const origX = el.x; const origY = el.y;
+        const handleMouseMove = (ev) => {
+          setElements(prev => prev.map(item => item.id === id ? { ...item, x: origX + (ev.clientX - startX)/zoom, y: origY + (ev.clientY - startY)/zoom } : item));
+        };
+        const handleMouseUp = () => { window.removeEventListener('mousemove', handleMouseMove); window.removeEventListener('mouseup', handleMouseUp); };
+        window.addEventListener('mousemove', handleMouseMove); window.addEventListener('mouseup', handleMouseUp);
+      };
+
+      const handleResizeStart = (e, id, dimension) => {
+        e.stopPropagation();
+        const el = elements.find(el => el.id === id);
+        const startVal = e.clientY; 
+        const startValX = e.clientX;
+        const origVal = el.height;
+        const origValW = el.width;
+        
+        const handleMouseMove = (ev) => {
+          setElements(prev => prev.map(item => {
+              if (item.id !== id) return item;
+              const newH = Math.max(10, origVal + (ev.clientY - startVal)/zoom);
+              const newW = Math.max(10, origValW + (ev.clientX - startValX)/zoom);
+              
+              if (dimension === 'height') return { ...item, height: newH };
+              if (dimension === 'both') return { ...item, width: newW, height: newH };
+              return item;
+          }));
+        };
+        const handleMouseUp = () => { window.removeEventListener('mousemove', handleMouseMove); window.removeEventListener('mouseup', handleMouseUp); };
+        window.addEventListener('mousemove', handleMouseMove); window.addEventListener('mouseup', handleMouseUp);
+      };
+
+      const selectedElement = elements.find(el => el.id === selectedId);
+
+      const handleGlobalClick = (e) => {
+          if (e.target === containerRef.current || e.target === containerRef.current?.querySelector('img')) {
+              setSelectedId(null);
+          }
+      };
+
+      const handleKeyDown = (e) => {
+          if (selectedId && e.key === 'Enter') { setSelectedId(null); }
+      };
+
+      const DraggableItem = ({ element, isSelected, onDragStart, onSelect, onResizeStart, onUpdateText }) => {
+        const commonStyle = { position: 'absolute', left: element.x, top: element.y, cursor: isSelected ? 'move' : 'pointer', zIndex: 10 };
+        const selectionBorder = isSelected ? 'ring-2 ring-blue-500 ring-offset-1' : '';
+        const itemColor = element.color || '#ef4444';
+
+        const TextDisplay = ({ className, vertical }) => (
+          <div className={`font-bold whitespace-nowrap bg-white shadow-md border rounded-md px-2 py-1 ${className}`} 
+              style={{ 
+                  color: itemColor,
+                  borderColor: `${itemColor}40`, 
+                  fontSize: element.fontSize || 24, 
+                  writingMode: vertical ? 'vertical-rl' : 'horizontal-tb', 
+                  textOrientation: 'upright', 
+                  letterSpacing: '0px'
+              }}>
+              {element.text}
+          </div>
+        );
+
+        if (element.type === 'box-label') {
+          return (
+            <div style={{ ...commonStyle, width: element.width, height: element.height }} onMouseDown={onSelect}>
+              <div className={`w-full h-full border-4 relative group ${selectionBorder}`} style={{borderColor: itemColor}} onMouseDown={onDragStart}>
+                {isSelected && (
+                  <div className="absolute -bottom-3 -right-3 w-6 h-6 bg-white border border-gray-300 rounded-full cursor-se-resize shadow flex items-center justify-center" onMouseDown={(e) => onResizeStart(e, 'box')}>
+                    <Move size={12}/>
                   </div>
-                  <div className="flex flex-col">
-                      <label className="text-gray-600 font-bold mb-1 text-xs">年齡 (黃)</label>
-                      <select 
-                          value={colMapping.age} 
-                          onChange={e => setColMapping({...colMapping, age: Number(e.target.value)})}
-                          className="border rounded p-1 text-xs"
-                      >
-                          {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
-                      </select>
-                  </div>
-                  <div className="flex flex-col">
-                      <label className="text-gray-600 font-bold mb-1 text-xs">保費 (綠)</label>
-                      <select 
-                          value={colMapping.prem} 
-                          onChange={e => setColMapping({...colMapping, prem: Number(e.target.value)})}
-                          className="border rounded p-1 text-xs"
-                      >
-                          {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
-                      </select>
-                  </div>
-                  <div className="flex flex-col">
-                      <label className="text-gray-600 font-bold mb-1 text-xs">解約 (藍)</label>
-                      <select 
-                          value={colMapping.cashVal} 
-                          onChange={e => setColMapping({...colMapping, cashVal: Number(e.target.value)})}
-                          className="border rounded p-1 text-xs"
-                      >
-                          {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
-                      </select>
-                  </div>
-                  <div className="flex flex-col">
-                      <label className="text-gray-600 font-bold mb-1 text-xs">領取 (橘)</label>
-                      <select 
-                          value={colMapping.withdraw} 
-                          onChange={e => setColMapping({...colMapping, withdraw: Number(e.target.value)})}
-                          className="border rounded p-1 text-xs"
-                      >
-                          {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
-                      </select>
+                )}
+              </div>
+            </div>
+          );
+        }
+        
+        if (element.type === 'arrow-label') {
+            return (
+              <div style={{ ...commonStyle, width: 40, height: element.height }} onMouseDown={onSelect}>
+                  <div className={`w-full h-full relative flex flex-col items-center ${selectionBorder}`} onMouseDown={onDragStart}>
+                      <div className="w-1 flex-1 relative" style={{background: `linear-gradient(to bottom, ${itemColor}80, ${itemColor})`}}>
+                          {element.textSide === 'right' && (
+                              <div className="absolute top-0 left-4 h-full flex flex-col justify-center">
+                                  <TextDisplay vertical={true} />
+                              </div>
+                          )}
+                      </div>
+                      {!element.hideArrowHead && <div className="-mt-2 z-10" style={{color: itemColor}}>▼</div>}
+                      {isSelected && <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 w-6 h-6 bg-white border border-gray-300 rounded-full cursor-ns-resize shadow z-20" onMouseDown={(e) => onResizeStart(e, 'height')} />}
                   </div>
               </div>
+            )
+        }
 
-              <table className="w-full text-xs text-left border-collapse">
-                  <thead>
-                      <tr>
-                          <th className="p-1 border border-gray-300 bg-gray-50">列</th>
-                          {colIndices.map(i => {
-                              const style = getColStyle(i);
-                              return (
-                                  <th key={i} className={`p-1 border text-center ${style.bg} ${style.border}`}>
-                                      {style.label}
-                                  </th>
-                              );
-                          })}
-                      </tr>
-                  </thead>
-                  <tbody>
-                      {previewRows.map((row, rIdx) => (
-                          <tr key={rIdx}>
-                              <td className="p-1 border border-gray-300 bg-gray-50 text-center">{rIdx + 1}</td>
-                              {colIndices.map(cIdx => {
-                                  const cellData = row[cIdx];
-                                  const val = cellData ? parseFloat(cellData.str.replace(/,/g, '')) : 0;
-                                  
-                                  const isPremCol = cIdx === colMapping.prem;
-                                  const isNoise = isPremCol && val > 0 && val < avgPremThreshold;
-                                  
+        if (element.type === 'text-only') {
+          return (
+            <div style={{ ...commonStyle }} onMouseDown={onDragStart} className={selectionBorder}>
+              <div style={{ writingMode: element.vertical ? 'vertical-rl' : 'horizontal-tb', textOrientation: 'upright' }}>
+                  <TextDisplay vertical={element.vertical} />
+              </div>
+            </div>
+          );
+        }
+        
+        if (element.type === 'box-highlight-blue') return null;
+
+        return null;
+      };
+
+      const DebugTable = () => {
+          if (!dataMatrix || dataMatrix.length === 0) return null;
+          
+          const previewRows = dataMatrix.slice(0, 15); 
+          const maxCols = Math.max(...previewRows.map(r => r.length));
+          const colIndices = Array.from({length: maxCols}, (_, i) => i);
+
+          const getColStyle = (colIdx) => {
+              if (colIdx === colMapping.policyYear) return { bg: 'bg-purple-100', border: 'border-purple-300', label: '年度' };
+              if (colIdx === colMapping.age) return { bg: 'bg-yellow-100', border: 'border-yellow-300', label: '年齡' };
+              if (colIdx === colMapping.prem) return { bg: 'bg-green-100', border: 'border-green-300', label: '保費' };
+              if (colIdx === colMapping.cashVal) return { bg: 'bg-blue-100', border: 'border-blue-300', label: '解約' };
+              if (colIdx === colMapping.withdraw) return { bg: 'bg-orange-100', border: 'border-orange-300', label: '領取' };
+              return { bg: 'bg-white', border: 'border-gray-200', label: colIdx };
+          };
+
+          const avgPremThreshold = analysisResult?.avgPremThreshold || 0;
+
+          return (
+              <div className="mt-4 p-4 bg-white border rounded-lg shadow-sm overflow-x-auto">
+                  <div className="flex justify-between items-center mb-2">
+                      <h3 className="font-bold text-gray-700 flex items-center gap-2">
+                          <TableIcon size={16} /> 數據透視與校正
+                      </h3>
+                      <div className="text-xs text-gray-500">
+                          若數值錯誤，請修改下方對應欄位
+                      </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-5 gap-2 mb-4 text-sm">
+                      <div className="flex flex-col">
+                          <label className="text-gray-600 font-bold mb-1 text-xs">年度 (紫)</label>
+                          <select 
+                              value={colMapping.policyYear} 
+                              onChange={e => setColMapping({...colMapping, policyYear: Number(e.target.value)})}
+                              className="border rounded p-1 text-xs"
+                          >
+                              {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
+                          </select>
+                      </div>
+                      <div className="flex flex-col">
+                          <label className="text-gray-600 font-bold mb-1 text-xs">年齡 (黃)</label>
+                          <select 
+                              value={colMapping.age} 
+                              onChange={e => setColMapping({...colMapping, age: Number(e.target.value)})}
+                              className="border rounded p-1 text-xs"
+                          >
+                              {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
+                          </select>
+                      </div>
+                      <div className="flex flex-col">
+                          <label className="text-gray-600 font-bold mb-1 text-xs">保費 (綠)</label>
+                          <select 
+                              value={colMapping.prem} 
+                              onChange={e => setColMapping({...colMapping, prem: Number(e.target.value)})}
+                              className="border rounded p-1 text-xs"
+                          >
+                              {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
+                          </select>
+                      </div>
+                      <div className="flex flex-col">
+                          <label className="text-gray-600 font-bold mb-1 text-xs">解約 (藍)</label>
+                          <select 
+                              value={colMapping.cashVal} 
+                              onChange={e => setColMapping({...colMapping, cashVal: Number(e.target.value)})}
+                              className="border rounded p-1 text-xs"
+                          >
+                              {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
+                          </select>
+                      </div>
+                      <div className="flex flex-col">
+                          <label className="text-gray-600 font-bold mb-1 text-xs">領取 (橘)</label>
+                          <select 
+                              value={colMapping.withdraw} 
+                              onChange={e => setColMapping({...colMapping, withdraw: Number(e.target.value)})}
+                              className="border rounded p-1 text-xs"
+                          >
+                              {colIndices.map(i => <option key={i} value={i}>第 {i+1} 欄</option>)}
+                          </select>
+                      </div>
+                  </div>
+
+                  <table className="w-full text-xs text-left border-collapse">
+                      <thead>
+                          <tr>
+                              <th className="p-1 border border-gray-300 bg-gray-50">列</th>
+                              {colIndices.map(i => {
+                                  const style = getColStyle(i);
                                   return (
-                                      <td key={cIdx} className={`p-1 border truncate max-w-[60px] ${getColStyle(cIdx).bg} ${getColStyle(cIdx).border} ${isNoise ? 'text-gray-400 line-through' : ''}`}>
-                                          {cellData ? cellData.str : '-'}
-                                      </td>
+                                      <th key={i} className={`p-1 border text-center ${style.bg} ${style.border}`}>
+                                          {style.label}
+                                      </th>
                                   );
                               })}
                           </tr>
-                      ))}
-                  </tbody>
-              </table>
-              <div className="text-xs text-gray-400 mt-2 text-center">僅顯示前 15 筆數據供校對</div>
-          </div>
-      );
-  };
+                      </thead>
+                      <tbody>
+                          {previewRows.map((row, rIdx) => (
+                              <tr key={rIdx}>
+                                  <td className="p-1 border border-gray-300 bg-gray-50 text-center">{rIdx + 1}</td>
+                                  {colIndices.map(cIdx => {
+                                      const cellData = row[cIdx];
+                                      const val = cellData ? parseFloat(cellData.str.replace(/,/g, '')) : 0;
+                                      
+                                      const isPremCol = cIdx === colMapping.prem;
+                                      const isNoise = isPremCol && val > 0 && val < avgPremThreshold;
+                                      
+                                      return (
+                                          <td key={cIdx} className={`p-1 border truncate max-w-[60px] ${getColStyle(cIdx).bg} ${getColStyle(cIdx).border} ${isNoise ? 'text-gray-400 line-through' : ''}`}>
+                                              {cellData ? cellData.str : '-'}
+                                          </td>
+                                      );
+                                  })}
+                              </tr>
+                          ))}
+                      </tbody>
+                  </table>
+                  <div className="text-xs text-gray-400 mt-2 text-center">僅顯示前 15 筆數據供校對</div>
+              </div>
+          );
+      };
 
-  return (
-    <div className="flex flex-col h-screen bg-gray-100 font-sans" onKeyDown={handleKeyDown}>
-      <header className="bg-white border-b px-6 py-4 flex justify-between items-center shadow-sm z-10 shrink-0">
-        <div className="flex items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-            <Columns className="text-indigo-600" /> 保誠（非年金）標注工具
-          </h1>
-          <button 
-            onClick={() => setShowInfoModal(true)}
-            className="flex items-center gap-1 text-sm bg-blue-50 text-blue-600 px-3 py-1.5 rounded-md hover:bg-blue-100 transition-colors font-medium border border-blue-200"
-          >
-            <Info size={16} /> 重要提示(檔案要求)
-          </button>
-          {image && (
-             <div className="flex gap-2">
-                <button onClick={handleExportPDF} disabled={!isExportLibLoaded || isProcessing} className="flex items-center gap-1 text-sm bg-red-50 text-red-600 px-3 py-1.5 rounded hover:bg-red-100 transition-colors">
-                   <FileText size={16}/> 匯出 PDF
-                </button>
-                <button onClick={handleExportPPTX} disabled={!isExportLibLoaded || isProcessing} className="flex items-center gap-1 text-sm bg-orange-50 text-orange-600 px-3 py-1.5 rounded hover:bg-orange-100 transition-colors">
-                   <Presentation size={16}/> 匯出 PPT
-                </button>
-             </div>
-          )}
-        </div>
-        <div className="flex gap-2">
-          {!image ? (
-            <button 
-              onClick={() => fileInputRef.current.click()}
-              disabled={isProcessing}
-              className={`bg-indigo-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-indigo-700 ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
-            >
-              {isProcessing ? (
-                <>
-                  <Loader2 className="animate-spin" />
-                  處理中...
-                </>
-              ) : (
-                <>
-                  <Upload size={18} /> 上傳 PDF
-                </>
+      return (
+        <div className="flex flex-col h-screen bg-gray-100 font-sans" onKeyDown={handleKeyDown}>
+          <header className="bg-white border-b px-6 py-4 flex justify-between items-center shadow-sm z-10 shrink-0">
+            <div className="flex items-center gap-4">
+              <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                <Columns className="text-indigo-600" /> 保誠（非年金）標注工具
+              </h1>
+              <button 
+                onClick={() => setShowInfoModal(true)}
+                className="flex items-center gap-1 text-sm bg-blue-50 text-blue-600 px-3 py-1.5 rounded-md hover:bg-blue-100 transition-colors font-medium border border-blue-200"
+              >
+                <Info size={16} /> 重要提示(檔案要求)
+              </button>
+              {image && (
+                 <div className="flex gap-2">
+                    <button onClick={handleExportPDF} disabled={!isExportLibLoaded || isProcessing} className="flex items-center gap-1 text-sm bg-red-50 text-red-600 px-3 py-1.5 rounded hover:bg-red-100 transition-colors">
+                       <FileText size={16}/> 匯出 PDF
+                    </button>
+                    <button onClick={handleExportPPTX} disabled={!isExportLibLoaded || isProcessing} className="flex items-center gap-1 text-sm bg-orange-50 text-orange-600 px-3 py-1.5 rounded hover:bg-orange-100 transition-colors">
+                       <Presentation size={16}/> 匯出 PPT
+                    </button>
+                 </div>
               )}
-            </button>
-          ) : (
-            <button 
-              onClick={() => { 
-                setImage(null); 
-                setElements([]); 
-                setPageDimensions([]);
-                setAnalysisResult(null);
-                setRawTextItems([]);
-                setDataMatrix(null);
-                if (fileInputRef.current) fileInputRef.current.value = '';
-              }} 
-              className="text-gray-500 text-sm hover:underline"
-            >
-              重新上傳
-            </button>
-          )}
-          {/* 只允許 PDF */}
-          <input type="file" ref={fileInputRef} className="hidden" accept=".pdf" onChange={handleFiles} />
-        </div>
-      </header>
+            </div>
+            <div className="flex gap-2">
+              {!image ? (
+                <button 
+                  onClick={() => fileInputRef.current.click()}
+                  disabled={isProcessing}
+                  className={`bg-indigo-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-indigo-700 ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 className="animate-spin" />
+                      處理中...
+                    </>
+                  ) : (
+                    <>
+                      <Upload size={18} /> 上傳 PDF
+                    </>
+                  )}
+                </button>
+              ) : (
+                <button 
+                  onClick={() => { 
+                    setImage(null); 
+                    setElements([]); 
+                    setPageDimensions([]);
+                    setAnalysisResult(null);
+                    setRawTextItems([]);
+                    setDataMatrix(null);
+                    if (fileInputRef.current) fileInputRef.current.value = '';
+                  }} 
+                  className="text-gray-500 text-sm hover:underline"
+                >
+                  重新上傳
+                </button>
+              )}
+              {/* 只允許 PDF */}
+              <input type="file" ref={fileInputRef} className="hidden" accept=".pdf" onChange={handleFiles} />
+            </div>
+          </header>
 
-      <div className="flex flex-1 overflow-hidden">
-          <aside className="w-80 bg-white border-r flex flex-col z-10 shadow-lg shrink-0">
-            <div className="flex-1 overflow-y-auto custom-scrollbar">
-                <div className="p-4 border-b">
-                  <div className="flex justify-between items-center mb-3">
-                    <h3 className="font-bold text-gray-700 text-sm">手動工具</h3>
-                    <div className="flex gap-2">
-                        {['#ef4444', '#2563eb', '#ea580c'].map(c => (
-                            <button 
-                                key={c}
-                                className={`w-5 h-5 rounded-full border border-gray-300 ${themeColor === c ? 'ring-2 ring-offset-1 ring-gray-400' : ''}`}
-                                style={{ backgroundColor: c }}
-                                onClick={() => setThemeColor(c)}
-                            />
-                        ))}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 mb-3">
-                    <button onClick={() => addElement({ type: 'box-label', width: 100, height: 50, color: themeColor, text: '', style: 'none' })} className="p-2 border rounded hover:bg-gray-50 flex flex-col items-center gap-1">
-                      <Square size={20} style={{color: themeColor}} />
-                      <span className="text-xs">純紅框</span>
-                    </button>
-                    <button onClick={() => addElement({ type: 'text-only', text: '輸入文字', color: themeColor, fontSize: defaultFontSize, fontWeight: 'bold' })} className="p-2 border rounded hover:bg-gray-50 flex flex-col items-center gap-1">
-                      <Edit3 size={20} style={{color: themeColor}} />
-                      <span className="text-xs">純文字</span>
-                    </button>
-                  </div>
-                  
-                  <div className="mb-2">
-                      <label className="text-xs text-gray-500 flex justify-between mb-1">
-                          <span>預設字體大小</span>
-                          <span>{defaultFontSize}px</span>
-                      </label>
-                      <input 
-                          type="range" min="12" max="48" step="2"
-                          value={defaultFontSize}
-                          onChange={(e) => setDefaultFontSize(Number(e.target.value))}
-                          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                      />
-                  </div>
-                </div>
-
-                {selectedElement && (
-                  <div className="p-4 border-b bg-yellow-50 animate-in slide-in-from-top-2">
-                    <h3 className="font-bold text-yellow-800 mb-2 text-sm flex items-center justify-between">
-                      <span><Edit3 size={14} className="inline mr-1"/> 編輯物件</span>
-                      <span className="text-xs text-yellow-600">Enter 完成</span>
-                    </h3>
-                    
-                    {typeof selectedElement.text === 'string' && (
-                        <div className="mb-2">
-                            <label className="text-xs text-gray-500 block mb-1">文字內容</label>
-                            <textarea 
-                              value={selectedElement.text}
-                              onChange={(e) => handleUpdateText(selectedElement.id, e.target.value)}
-                              className="w-full p-2 border border-yellow-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                              rows={3}
-                            />
-                        </div>
-                    )}
-                    
-                    {(selectedElement.type === 'text-only' || selectedElement.type === 'box-label' || selectedElement.type === 'arrow-label') && (
-                        <div>
-                            <label className="text-xs text-gray-500 flex justify-between mb-1">
-                                <span>文字大小</span>
-                                <span>{selectedElement.fontSize || 24}px</span>
-                            </label>
-                            <input 
-                                type="range" min="12" max="48" step="2"
-                                value={selectedElement.fontSize || 24}
-                                onChange={(e) => handleUpdateFontSize(selectedElement.id, e.target.value)}
-                                className="w-full h-2 bg-yellow-200 rounded-lg appearance-none cursor-pointer"
-                            />
-                        </div>
-                    )}
-                  </div>
-                )}
-                
-                {analysisResult && (
-                  <div className="p-4 space-y-4 bg-gray-50/50">
-                    <h3 className="font-bold text-gray-800 flex items-center border-b pb-2">
-                      <Calculator className="w-4 h-4 mr-2 text-indigo-600" />
-                      保單效益分析
-                    </h3>
-                    <button 
-                        onClick={generateMarketingAnnotations}
-                        className="w-full text-white p-3 rounded-lg shadow-md transition-all flex items-center justify-center font-bold mb-2"
-                        style={{ 
-                            background: `linear-gradient(to right, ${themeColor}, ${themeColor}dd)` 
-                        }}
-                    >
-                        <Wand2 className="w-5 h-5 mr-2" />
-                        一鍵生成行銷圖
-                    </button>
-                    
-                      <div className="text-sm text-gray-600 space-y-2">
-                        <div className="flex justify-between"><span>繳費年期:</span> <span className="font-bold">{analysisResult.paymentTerm}年</span></div>
-                        <div className="flex justify-between"><span>總存金額:</span> <span className="font-bold">{analysisResult.totalPremium.toLocaleString()}</span></div>
-                        <div className="flex justify-between border-t pt-1">
-                            <span>滿期保本:</span> 
-                            <div className="text-right">
-                                <span className="font-bold text-green-600 block">{analysisResult.breakevenValue.toLocaleString()}</span>
-                            </div>
-                        </div>
-                        <div className="flex justify-between border-t pt-1">
-                            <span>總領回報:</span> 
-                            <div className="text-right">
-                                <span className="font-bold text-blue-600 block">{analysisResult.totalWithdraw.toLocaleString()}</span>
-                                <span className="text-xs text-gray-500">{analysisResult.withdrawRatio} 倍</span>
-                            </div>
-                        </div>
-                        <div className="flex justify-between border-t pt-1">
-                            <span>最高增值:</span> 
-                            <div className="text-right">
-                                <span className="font-bold text-purple-600 block">{analysisResult.finalCashValue.toLocaleString()}</span>
-                                <span className="text-xs text-gray-500">{analysisResult.finalRatio} 倍</span>
-                            </div>
+          <div className="flex flex-1 overflow-hidden">
+              <aside className="w-80 bg-white border-r flex flex-col z-10 shadow-lg shrink-0">
+                <div className="flex-1 overflow-y-auto custom-scrollbar">
+                    <div className="p-4 border-b">
+                      <div className="flex justify-between items-center mb-3">
+                        <h3 className="font-bold text-gray-700 text-sm">手動工具</h3>
+                        <div className="flex gap-2">
+                            {['#ef4444', '#2563eb', '#ea580c'].map(c => (
+                                <button 
+                                    key={c}
+                                    className={`w-5 h-5 rounded-full border border-gray-300 ${themeColor === c ? 'ring-2 ring-offset-1 ring-gray-400' : ''}`}
+                                    style={{ backgroundColor: c }}
+                                    onClick={() => setThemeColor(c)}
+                                />
+                            ))}
                         </div>
                       </div>
+                      <div className="grid grid-cols-2 gap-2 mb-3">
+                        <button onClick={() => addElement({ type: 'box-label', width: 100, height: 50, color: themeColor, text: '', style: 'none' })} className="p-2 border rounded hover:bg-gray-50 flex flex-col items-center gap-1">
+                          <Square size={20} style={{color: themeColor}} />
+                          <span className="text-xs">純紅框</span>
+                        </button>
+                        <button onClick={() => addElement({ type: 'text-only', text: '輸入文字', color: themeColor, fontSize: defaultFontSize, fontWeight: 'bold' })} className="p-2 border rounded hover:bg-gray-50 flex flex-col items-center gap-1">
+                          <Edit3 size={20} style={{color: themeColor}} />
+                          <span className="text-xs">純文字</span>
+                        </button>
+                      </div>
                       
-                      <DebugTable />
+                      <div className="mb-2">
+                          <label className="text-xs text-gray-500 flex justify-between mb-1">
+                              <span>預設字體大小</span>
+                              <span>{defaultFontSize}px</span>
+                          </label>
+                          <input 
+                              type="range" min="12" max="48" step="2"
+                              value={defaultFontSize}
+                              onChange={(e) => setDefaultFontSize(Number(e.target.value))}
+                              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                          />
+                      </div>
+                    </div>
+
+                    {selectedElement && (
+                      <div className="p-4 border-b bg-yellow-50 animate-in slide-in-from-top-2">
+                        <h3 className="font-bold text-yellow-800 mb-2 text-sm flex items-center justify-between">
+                          <span><Edit3 size={14} className="inline mr-1"/> 編輯物件</span>
+                          <span className="text-xs text-yellow-600">Enter 完成</span>
+                        </h3>
+                        
+                        {typeof selectedElement.text === 'string' && (
+                            <div className="mb-2">
+                                <label className="text-xs text-gray-500 block mb-1">文字內容</label>
+                                <textarea 
+                                  value={selectedElement.text}
+                                  onChange={(e) => handleUpdateText(selectedElement.id, e.target.value)}
+                                  className="w-full p-2 border border-yellow-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                                  rows={3}
+                                />
+                            </div>
+                        )}
+                        
+                        {(selectedElement.type === 'text-only' || selectedElement.type === 'box-label' || selectedElement.type === 'arrow-label') && (
+                            <div>
+                                <label className="text-xs text-gray-500 flex justify-between mb-1">
+                                    <span>文字大小</span>
+                                    <span>{selectedElement.fontSize || 24}px</span>
+                                </label>
+                                <input 
+                                    type="range" min="12" max="48" step="2"
+                                    value={selectedElement.fontSize || 24}
+                                    onChange={(e) => handleUpdateFontSize(selectedElement.id, e.target.value)}
+                                    className="w-full h-2 bg-yellow-200 rounded-lg appearance-none cursor-pointer"
+                                />
+                            </div>
+                        )}
+                      </div>
+                    )}
+                    
+                    {analysisResult && (
+                      <div className="p-4 space-y-4 bg-gray-50/50">
+                        <h3 className="font-bold text-gray-800 flex items-center border-b pb-2">
+                          <Calculator className="w-4 h-4 mr-2 text-indigo-600" />
+                          保單效益分析
+                        </h3>
+                        <button 
+                            onClick={generateMarketingAnnotations}
+                            className="w-full text-white p-3 rounded-lg shadow-md transition-all flex items-center justify-center font-bold mb-2"
+                            style={{ 
+                                background: `linear-gradient(to right, ${themeColor}, ${themeColor}dd)` 
+                            }}
+                        >
+                            <Wand2 className="w-5 h-5 mr-2" />
+                            一鍵生成行銷圖
+                        </button>
+                        
+                          <div className="text-sm text-gray-600 space-y-2">
+                            <div className="flex justify-between"><span>繳費年期:</span> <span className="font-bold">{analysisResult.paymentTerm}年</span></div>
+                            <div className="flex justify-between"><span>總存金額:</span> <span className="font-bold">{analysisResult.totalPremium.toLocaleString()}</span></div>
+                            <div className="flex justify-between border-t pt-1">
+                                <span>滿期保本:</span> 
+                                <div className="text-right">
+                                    <span className="font-bold text-green-600 block">{analysisResult.breakevenValue.toLocaleString()}</span>
+                                </div>
+                            </div>
+                            <div className="flex justify-between border-t pt-1">
+                                <span>總領回報:</span> 
+                                <div className="text-right">
+                                    <span className="font-bold text-blue-600 block">{analysisResult.totalWithdraw.toLocaleString()}</span>
+                                    <span className="text-xs text-gray-500">{analysisResult.withdrawRatio} 倍</span>
+                                </div>
+                            </div>
+                            <div className="flex justify-between border-t pt-1">
+                                <span>最高增值:</span> 
+                                <div className="text-right">
+                                    <span className="font-bold text-purple-600 block">{analysisResult.finalCashValue.toLocaleString()}</span>
+                                    <span className="text-xs text-gray-500">{analysisResult.finalRatio} 倍</span>
+                                </div>
+                            </div>
+                          </div>
+                          
+                          <DebugTable />
+                      </div>
+                    )}
+                </div>
+                {selectedId && (
+                  <div className="p-4 bg-gray-50 border-t shrink-0">
+                    <button onClick={() => deleteElement(selectedId)} className="w-full flex justify-center items-center text-red-600 hover:bg-red-100 p-2 rounded"><Trash2 size={18} className="mr-2"/> 刪除物件</button>
                   </div>
                 )}
-            </div>
-            {selectedId && (
-              <div className="p-4 bg-gray-50 border-t shrink-0">
-                <button onClick={() => deleteElement(selectedId)} className="w-full flex justify-center items-center text-red-600 hover:bg-red-100 p-2 rounded"><Trash2 size={18} className="mr-2"/> 刪除物件</button>
-              </div>
-            )}
-          </aside>
+              </aside>
 
-          <main 
-              ref={mainScrollRef}
-              className="flex-1 bg-gray-200 overflow-auto flex relative p-8"
-              style={{ cursor: 'grab' }}
-              onClick={handleGlobalClick}
-          >
-            {image ? (
-              <div className="flex flex-col items-center">
-                  <div 
-                    className="relative shadow-2xl bg-white select-none origin-top-left transition-transform duration-100 ease-out mb-8"
-                    style={{ transform: `scale(${zoom})`, minWidth: 'fit-content' }}
-                    ref={containerRef}
-                  >
-                    <img src={image} alt="Document" className="pointer-events-none max-w-none block" />
-                    {elements.map(el => (
-                      <DraggableItem 
-                        key={el.id} element={el} isSelected={selectedId === el.id} zoom={zoom}
-                        onDragStart={(e) => handleDragStart(e, el.id)}
-                        onSelect={(e) => { e.stopPropagation(); setSelectedId(el.id); }}
-                        onResizeStart={(e, dim) => handleResizeStart(e, el.id, dim === 'box' ? 'both' : 'height')}
-                        onUpdateText={(text) => handleUpdateText(el.id, text)}
-                      />
-                    ))}
+              <main 
+                  ref={mainScrollRef}
+                  className="flex-1 bg-gray-200 overflow-auto flex relative p-8"
+                  style={{ cursor: 'grab' }}
+                  onClick={handleGlobalClick}
+              >
+                {image ? (
+                  <div className="flex flex-col items-center">
+                      <div 
+                        className="relative shadow-2xl bg-white select-none origin-top-left transition-transform duration-100 ease-out mb-8"
+                        style={{ transform: `scale(${zoom})`, minWidth: 'fit-content' }}
+                        ref={containerRef}
+                      >
+                        <img src={image} alt="Document" className="pointer-events-none max-w-none block" />
+                        {elements.map(el => (
+                          <DraggableItem 
+                            key={el.id} element={el} isSelected={selectedId === el.id} zoom={zoom}
+                            onDragStart={(e) => handleDragStart(e, el.id)}
+                            onSelect={(e) => { e.stopPropagation(); setSelectedId(el.id); }}
+                            onResizeStart={(e, dim) => handleResizeStart(e, el.id, dim === 'box' ? 'both' : 'height')}
+                            onUpdateText={(text) => handleUpdateText(el.id, text)}
+                          />
+                        ))}
+                      </div>
                   </div>
-              </div>
-            ) : (
-                <div 
-                    className="m-auto w-full max-w-2xl h-96 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-indigo-400 cursor-pointer transition-colors"
-                    onClick={() => fileInputRef.current.click()}
-                >
-                    <div className="flex flex-col items-center gap-2">
-                        <Upload size={48} className="text-indigo-200"/>
-                        <p className="text-lg text-gray-600 font-medium">點擊上傳 PDF</p>
-                        <p className="text-sm text-gray-400">系統僅支援標準 PDF 格式文件</p>
+                ) : (
+                    <div 
+                        className="m-auto w-full max-w-2xl h-96 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-indigo-400 cursor-pointer transition-colors"
+                        onClick={() => fileInputRef.current.click()}
+                    >
+                        <div className="flex flex-col items-center gap-2">
+                            <Upload size={48} className="text-indigo-200"/>
+                            <p className="text-lg text-gray-600 font-medium">點擊上傳 PDF</p>
+                            <p className="text-sm text-gray-400">系統僅支援標準 PDF 格式文件</p>
+                        </div>
                     </div>
-                </div>
-            )}
-          </main>
-      </div>
-
-      {/* 重要提示對話框 */}
-      {showInfoModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowInfoModal(false)}>
-          <div className="bg-white rounded-xl p-6 shadow-2xl max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                <Info className="text-blue-500" /> 檔案要求限制
-              </h2>
-              <button onClick={() => setShowInfoModal(false)} className="text-gray-400 hover:text-gray-600 p-1 rounded-md hover:bg-gray-100 transition-colors">
-                <X size={20} />
-              </button>
-            </div>
-            <div className="bg-blue-50 text-blue-800 p-5 rounded-lg border border-blue-100 text-sm leading-relaxed">
-              <p className="font-medium text-base mb-2">為確保系統能準確解析，上傳檔案請符合以下條件：</p>
-              <p>
-                限制 <strong className="text-blue-600">[保誠]</strong> EXCEL試算表輸出 <strong className="text-blue-600">[減少保險金額表]</strong> 的 <strong className="text-blue-600">[中分紅]</strong> 頁面。
-              </p>
-            </div>
-            <button 
-              onClick={() => setShowInfoModal(false)}
-              className="mt-6 w-full bg-blue-600 text-white py-2.5 rounded-lg font-bold hover:bg-blue-700 transition-colors shadow-sm"
-            >
-              我瞭解了
-            </button>
+                )}
+              </main>
           </div>
-        </div>
-      )}
-    </div>
-  );
-};
 
-export default App;
+          {/* 重要提示對話框 */}
+          {showInfoModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowInfoModal(false)}>
+              <div className="bg-white rounded-xl p-6 shadow-2xl max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <Info className="text-blue-500" /> 檔案要求限制
+                  </h2>
+                  <button onClick={() => setShowInfoModal(false)} className="text-gray-400 hover:text-gray-600 p-1 rounded-md hover:bg-gray-100 transition-colors">
+                    <X size={20} />
+                  </button>
+                </div>
+                <div className="bg-blue-50 text-blue-800 p-5 rounded-lg border border-blue-100 text-sm leading-relaxed">
+                  <p className="font-medium text-base mb-2">為確保系統能準確解析，上傳檔案請符合以下條件：</p>
+                  <p>
+                    限制 <strong className="text-blue-600">[保誠]</strong> EXCEL試算表輸出 <strong className="text-blue-600">[減少保險金額表]</strong> 的 <strong className="text-blue-600">[中分紅]</strong> 頁面。
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setShowInfoModal(false)}
+                  className="mt-6 w-full bg-blue-600 text-white py-2.5 rounded-lg font-bold hover:bg-blue-700 transition-colors shadow-sm"
+                >
+                  我了解了
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
